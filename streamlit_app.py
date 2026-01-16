@@ -155,6 +155,7 @@ if scan_button:
     with st.spinner("Scanning market..."):
         for ticker in TICKERS:
             try:
+                # Download main interval data
                 data = yf.download(
                     ticker,
                     period="9mo",
@@ -177,15 +178,45 @@ if scan_button:
                     (not prev_patterns or prev_candle in prev_patterns)
                     and (not curr_patterns or curr_candle in curr_patterns)
                 ):
+
+                    # -----------------------
+                    # Calculate FTFC (Timeframe Continuity)
+                    # -----------------------
+                    ftfc_result = []
+
+                    # Monthly data
+                    monthly_data = yf.download(
+                        ticker, period="12mo", interval="1mo", progress=False, auto_adjust=False
+                    )
+                    if not monthly_data.empty:
+                        current_month_open = monthly_data.iloc[-1]["Open"]
+                        if float(curr["Close"]) > float(current_month_open):
+                            ftfc_result.append("M: Bullish")
+                        elif float(curr["Close"]) < float(current_month_open):
+                            ftfc_result.append("M: Bearish")
+
+                    # Weekly data
+                    weekly_data = yf.download(
+                        ticker, period="12mo", interval="1wk", progress=False, auto_adjust=False
+                    )
+                    if not weekly_data.empty:
+                        current_week_open = weekly_data.iloc[-1]["Open"]
+                        if float(curr["Close"]) > float(current_week_open):
+                            ftfc_result.append("W: Bullish")
+                        elif float(curr["Close"]) < float(current_week_open):
+                            ftfc_result.append("W: Bearish")
+
+                    ftfc_str = ", ".join(ftfc_result) if ftfc_result else "N/A"
+
+                    # Append result with FTFC
                     results.append(
                         {
                             "Ticker": ticker,
                             "Previous Candle": prev_candle,
                             "Current Candle": curr_candle,
-                            "Direction": "Up"
-                            if float(curr["Close"]) > float(curr["Open"])
-                            else "Down",
+                            "Direction": "Up" if float(curr["Close"]) > float(curr["Open"]) else "Down",
                             "Close Price": round(float(curr["Close"]), 2),
+                            "FTFC": ftfc_str,  # New column
                         }
                     )
 
