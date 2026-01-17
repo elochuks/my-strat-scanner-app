@@ -8,57 +8,36 @@ import pandas as pd
 st.set_page_config(page_title="STRAT Scanner", layout="wide")
 
 # =====================================================
-# LOAD TICKERS (HARDENED & CLOUD-SAFE)
+# LOAD TICKERS
 # =====================================================
 @st.cache_data(ttl=86400)
 def load_tickers():
     tickers = set()
 
-    # -----------------------------
-    # S&P 500
-    # -----------------------------
     try:
-        sp500_url = (
+        url = (
             "https://raw.githubusercontent.com/"
             "datasets/s-and-p-500-companies/master/data/constituents.csv"
         )
-        sp500_df = pd.read_csv(sp500_url)
-        tickers.update(sp500_df["Symbol"].dropna().tolist())
-    except Exception as e:
-        st.warning(f"S&P 500 load failed: {e}")
+        df = pd.read_csv(url)
+        tickers.update(df["Symbol"].dropna().tolist())
+    except Exception:
+        pass
 
-    # -----------------------------
-    # ETFs
-    # -----------------------------
-    etfs = [
-        "SPY", "IVV", "VOO", "QQQ", "DIA", "IWM",
-        "XLF", "XLK", "XLE", "XLY", "XLP", "XLV",
-        "XLI", "XLB", "XLRE", "XLU", "XLC",
-        "VUG", "VTV", "IWF", "IWD",
-        "TLT", "IEF", "SHY", "LQD", "HYG",
-        "GLD", "SLV", "USO", "UNG",
-        "VXX", "SQQQ", "TQQQ"
-    ]
-    tickers.update(etfs)
+    tickers.update([
+        "SPY","QQQ","IWM","DIA","IVV","VOO",
+        "XLF","XLK","XLE","XLV","XLY","XLP",
+        "TLT","IEF","GLD","SLV",
+        "^GSPC","^NDX","^DJI","^RUT","^VIX"
+    ])
 
-    # -----------------------------
-    # Indexes
-    # -----------------------------
-    indexes = ["^GSPC", "^NDX", "^DJI", "^RUT", "^VIX"]
-    tickers.update(indexes)
-
-    tickers = sorted(tickers)
-
-    if not tickers:
-        raise RuntimeError("No tickers loaded")
-
-    return tickers
+    return sorted(tickers)
 
 
 TICKERS = load_tickers()
 
 # =====================================================
-# SAFE YFINANCE DOWNLOAD (CACHED + NO THREADING)
+# SAFE YFINANCE DOWNLOAD
 # =====================================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_price_data(ticker, period, interval):
@@ -68,81 +47,76 @@ def get_price_data(ticker, period, interval):
         interval=interval,
         progress=False,
         auto_adjust=False,
-        threads=False,  # 🔑 CRITICAL FIX
+        threads=False,
     )
 
-
 # =====================================================
-# STRAT CANDLE LOGIC
+# STRAT LOGIC (FIXED)
 # =====================================================
 def strat_type(prev, curr):
     prev_h, prev_l = float(prev["High"]), float(prev["Low"])
     curr_h, curr_l = float(curr["High"]), float(curr["Low"])
     curr_o, curr_c = float(curr["Open"]), float(curr["Close"])
 
-    candle_color = "Green" if curr_c > curr_o else "Red"
+    # Normalize color
+    color = "Green" if curr_c >= curr_o else "Red"
 
     if curr_h < prev_h and curr_l > prev_l:
         return "1 (Inside)"
     elif curr_h > prev_h and curr_l < prev_l:
         return "3 (Outside)"
     elif curr_h > prev_h:
-        return f"2U {candle_color}"
+        return f"2U {color}"
     elif curr_l < prev_l:
-        return f"2D {candle_color}"
+        return f"2D {color}"
     else:
-        return "Undefined"
-
+        return "1 (Inside)"  # never undefined
 
 # =====================================================
 # UI
 # =====================================================
 st.title("📊 STRAT Scanner")
-st.caption(f"Scanning universe: **{len(TICKERS)}** tickers")
+st.caption(f"Universe size: **{len(TICKERS)}**")
 
 timeframe = st.selectbox(
-    "Select Timeframe",
-    ["4-Hour", "2-Day", "Daily", "2-Week", "Weekly", "Monthly", "3-Month"],
+    "Timeframe",
+    ["4-Hour", "Daily", "Weekly", "Monthly"]
 )
 
 interval_map = {
     "4-Hour": "4h",
-    "2-Day": "2d",
     "Daily": "1d",
-    "2-Week": "2wk",
     "Weekly": "1wk",
     "Monthly": "1mo",
-    "3-Month": "3mo",
 }
 
 available_patterns = [
     "1 (Inside)", "3 (Outside)",
-    "2U Red", "2U Green",
-    "2D Red", "2D Green"
+    "2U Green", "2U Red",
+    "2D Green", "2D Red"
 ]
 
 st.subheader("STRAT Filters")
 
 prev_patterns = st.multiselect(
-    "Previous Candle",
-    options=available_patterns,
-    default=available_patterns,
+    "Previous Candle (optional)",
+    available_patterns,
+    default=[]
 )
 
 curr_patterns = st.multiselect(
     "Current Candle",
-    options=available_patterns,
-    default=available_patterns,
+    available_patterns,
+    default=available_patterns
 )
 
 use_ftfc = st.checkbox("Include FTFC (Weekly / Monthly)", value=True)
 
+show_all = st.checkbox("Ignore STRAT filters (debug)", value=False)
+
 max_tickers = st.slider(
-    "Max tickers to scan (performance control)",
-    min_value=50,
-    max_value=600,
-    value=200,
-    step=25,
+    "Max tickers to scan",
+    25, 600, 200, 25
 )
 
 scan_button = st.button("🚀 Run Scanner")
@@ -158,53 +132,52 @@ if scan_button:
             try:
                 data = get_price_data(
                     ticker,
-                    period="9mo",
-                    interval=interval_map[timeframe],
+                    "9mo",
+                    interval_map[timeframe]
                 )
 
                 if data.empty or len(data) < 3:
                     continue
 
-                prev_prev = data.iloc[-3]
-                prev = data.iloc[-2]
-                curr = data.iloc[-1]
+                pprev, prev, curr = data.iloc[-3], data.iloc[-2], data.iloc[-1]
 
-                prev_candle = strat_type(prev_prev, prev)
+                prev_candle = strat_type(pprev, prev)
                 curr_candle = strat_type(prev, curr)
 
-                if prev_candle not in prev_patterns or curr_candle not in curr_patterns:
-                    continue
+                if not show_all:
+                    if prev_patterns and prev_candle not in prev_patterns:
+                        continue
+                    if curr_patterns and curr_candle not in curr_patterns:
+                        continue
 
-                ftfc_str = "N/A"
+                ftfc = "N/A"
 
                 if use_ftfc:
-                    ftfc = []
+                    tfc = []
 
-                    monthly = get_price_data(ticker, "12mo", "1mo")
-                    if not monthly.empty:
-                        ftfc.append(
-                            "M: Bullish"
-                            if curr["Close"] > monthly.iloc[-1]["Open"]
+                    m = get_price_data(ticker, "12mo", "1mo")
+                    if not m.empty:
+                        tfc.append(
+                            "M: Bullish" if curr["Close"] > m.iloc[-1]["Open"]
                             else "M: Bearish"
                         )
 
-                    weekly = get_price_data(ticker, "12mo", "1wk")
-                    if not weekly.empty:
-                        ftfc.append(
-                            "W: Bullish"
-                            if curr["Close"] > weekly.iloc[-1]["Open"]
+                    w = get_price_data(ticker, "12mo", "1wk")
+                    if not w.empty:
+                        tfc.append(
+                            "W: Bullish" if curr["Close"] > w.iloc[-1]["Open"]
                             else "W: Bearish"
                         )
 
-                    ftfc_str = ", ".join(ftfc)
+                    ftfc = ", ".join(tfc)
 
                 results.append({
                     "Ticker": ticker,
                     "Previous Candle": prev_candle,
                     "Current Candle": curr_candle,
-                    "Direction": "Up" if curr["Close"] > curr["Open"] else "Down",
-                    "Close Price": round(float(curr["Close"]), 2),
-                    "FTFC": ftfc_str,
+                    "Direction": "Up" if curr["Close"] >= curr["Open"] else "Down",
+                    "Close": round(float(curr["Close"]), 2),
+                    "FTFC": ftfc
                 })
 
             except Exception:
@@ -212,7 +185,7 @@ if scan_button:
 
     if results:
         df = pd.DataFrame(results)
-        st.success(f"✅ Found {len(df)} matching tickers")
+        st.success(f"✅ {len(df)} results found")
         st.dataframe(df, use_container_width=True)
     else:
-        st.warning("No tickers matched the selected STRAT criteria.")
+        st.warning("No results — loosen filters or enable debug mode.")
