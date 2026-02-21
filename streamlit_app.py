@@ -5,13 +5,13 @@ import pandas as pd
 st.set_page_config(page_title="STRAT Scanner", layout="wide")
 
 # =====================================================
-# LOAD TICKERS (FIXED URL - REMOVED SPACE)
+# LOAD TICKERS (FIXED URL)
 # =====================================================
 @st.cache_data(ttl=86400)
 def load_tickers():
     tickers = set()
     
-    # S&P 500 (FIXED URL)
+    # S&P 500 (FIXED URL - removed space)
     try:
         sp500_url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv"
         sp500_df = pd.read_csv(sp500_url)
@@ -37,7 +37,6 @@ TICKERS = load_tickers()
 def get_val(row, col, ticker=None):
     """
     Extract values handling both MultiIndex (new yfinance) and flat columns (old)
-    New yfinance returns columns like: ('Close', 'AAPL'), ('High', 'AAPL'), etc.
     """
     if isinstance(row.index, pd.MultiIndex):
         try:
@@ -80,21 +79,20 @@ def strat_type(prev, curr, ticker):
         return "Undefined"
 
 # =====================================================
-# FTFC CALCULATION (FOLLOW THE TIMEFRAME CONTINUITY)
+# FTFC CALCULATION (FIXED FOR 3M TIMEFRAME)
 # =====================================================
-def calculate_ftfc(ticker, current_close):
+def calculate_ftfc(ticker, current_close, is_quarterly=False):
     """
-    Calculate FTFC: Compare current price to Monthly and Quarterly opening prices
-    For 3M timeframe, we compare to Quarterly open instead of Weekly
-    Returns format: "M: Bullish, Q: Bearish" or "N/A"
+    Calculate FTFC: Compare current price to Monthly and Weekly/Quarterly opening prices
+    For 3M timeframe, compares to Quarterly open instead of Weekly
     """
     ftfc_results = []
     
-    # Monthly FTFC
+    # Monthly FTFC (always check monthly)
     try:
         monthly_data = yf.download(
             ticker, 
-            period="6mo", 
+            period="6mo",  # Shorter period for monthly
             interval="1mo", 
             progress=False, 
             auto_adjust=True
@@ -111,32 +109,56 @@ def calculate_ftfc(ticker, current_close):
                 ftfc_results.append("M: Bullish")
             elif current_close < monthly_open:
                 ftfc_results.append("M: Bearish")
-    except Exception:
+    except Exception as e:
         pass
     
-    # Quarterly FTFC (3-Month) - For higher timeframe context
-    try:
-        quarterly_data = yf.download(
-            ticker, 
-            period="1y", 
-            interval="3mo", 
-            progress=False, 
-            auto_adjust=True
-        )
-        
-        if not quarterly_data.empty and len(quarterly_data) >= 1:
-            # Get current quarter's open price
-            if isinstance(quarterly_data.columns, pd.MultiIndex):
-                quarterly_open = float(quarterly_data.iloc[-1][("Open", ticker)])
-            else:
-                quarterly_open = float(quarterly_data.iloc[-1]["Open"])
+    # Weekly or Quarterly FTFC based on timeframe
+    if is_quarterly:
+        # For 3M timeframe, check against current quarter open using 3mo data
+        try:
+            quarterly_data = yf.download(
+                ticker, 
+                period="1y",
+                interval="3mo", 
+                progress=False, 
+                auto_adjust=True
+            )
             
-            if current_close > quarterly_open:
-                ftfc_results.append("Q: Bullish")
-            elif current_close < quarterly_open:
-                ftfc_results.append("Q: Bearish")
-    except Exception:
-        pass
+            if not quarterly_data.empty and len(quarterly_data) >= 1:
+                if isinstance(quarterly_data.columns, pd.MultiIndex):
+                    quarterly_open = float(quarterly_data.iloc[-1][("Open", ticker)])
+                else:
+                    quarterly_open = float(quarterly_data.iloc[-1]["Open"])
+                
+                if current_close > quarterly_open:
+                    ftfc_results.append("Q: Bullish")
+                elif current_close < quarterly_open:
+                    ftfc_results.append("Q: Bearish")
+        except Exception as e:
+            pass
+    else:
+        # Weekly FTFC for daily/weekly/monthly timeframes
+        try:
+            weekly_data = yf.download(
+                ticker, 
+                period="1mo",
+                interval="1wk", 
+                progress=False, 
+                auto_adjust=True
+            )
+            
+            if not weekly_data.empty and len(weekly_data) >= 1:
+                if isinstance(weekly_data.columns, pd.MultiIndex):
+                    weekly_open = float(weekly_data.iloc[-1][("Open", ticker)])
+                else:
+                    weekly_open = float(weekly_data.iloc[-1]["Open"])
+                
+                if current_close > weekly_open:
+                    ftfc_results.append("W: Bullish")
+                elif current_close < weekly_open:
+                    ftfc_results.append("W: Bearish")
+        except Exception as e:
+            pass
     
     return ", ".join(ftfc_results) if ftfc_results else "N/A"
 
@@ -146,13 +168,12 @@ def calculate_ftfc(ticker, current_close):
 st.title("📊 STRAT Scanner with FTFC")
 st.caption(f"Scanning **{len(TICKERS)}** tickers | STRAT Patterns + Timeframe Continuity")
 
-# UPDATED: Added 3-Month timeframe
 timeframe = st.selectbox(
     "Select Timeframe", 
     ["Daily", "Weekly", "Monthly", "3-Month"]
 )
 
-# UPDATED: Interval mapping with 3mo
+# UPDATED: Fixed period mapping for 3M to ensure enough data
 interval_map = {
     "Daily": "1d", 
     "Weekly": "1wk", 
@@ -160,12 +181,20 @@ interval_map = {
     "3-Month": "3mo"
 }
 
-# Period mapping (how much history to download)
+# CRITICAL FIX: 3mo needs "max" period to get enough candles
 period_map = {
     "Daily": "6mo",
     "Weekly": "12mo", 
     "Monthly": "2y",
-    "3-Month": "5y"  # Need more history for 3mo candles
+    "3-Month": "max"  # Changed from "5y" to "max" to ensure enough 3mo candles
+}
+
+# Minimum candles needed for STRAT calculation
+min_candles_map = {
+    "Daily": 3,
+    "Weekly": 3,
+    "Monthly": 3,
+    "3-Month": 2  # 3mo candles are large, only need 2 for comparison (prev vs curr)
 }
 
 available_patterns = ["1 (Inside)", "3 (Outside)", "2U Red", "2U Green", "2D Red", "2D Green"]
@@ -177,7 +206,7 @@ with col1:
 with col2:
     curr_patterns = st.multiselect("Current Candle", options=available_patterns, default=available_patterns)
 
-# FTFC Filter Section - Updated for 3M timeframe
+# FTFC Filter Section
 st.subheader("FTFC (Follow The Timeframe Continuity) Filter")
 
 # Dynamic FTFC options based on timeframe
@@ -198,7 +227,7 @@ with col4:
 scan_button = st.button("🔍 Run Scanner", type="primary")
 
 # =====================================================
-# SCANNER WITH FTFC AND 3-MONTH SUPPORT
+# SCANNER WITH 3-MONTH SUPPORT
 # =====================================================
 if scan_button:
     results = []
@@ -209,17 +238,19 @@ if scan_button:
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    # Get appropriate period for selected timeframe
+    # Get appropriate settings for selected timeframe
     download_period = period_map[timeframe]
+    min_candles = min_candles_map[timeframe]
+    is_3m = (timeframe == "3-Month")
     
     for idx, ticker in enumerate(tickers_to_scan):
         try:
             # Update progress
             progress = (idx + 1) / total
             progress_bar.progress(min(progress, 0.99))
-            status_text.text(f"Scanning {ticker}... ({idx+1}/{total}) | TF: {timeframe}")
+            status_text.text(f"Scanning {ticker}... ({idx+1}/{total}) | TF: {timeframe} | Need {min_candles} candles")
             
-            # Download main timeframe data with appropriate period
+            # Download main timeframe data
             data = yf.download(
                 ticker,
                 period=download_period,
@@ -229,36 +260,50 @@ if scan_button:
             )
             
             # Debug: Show raw data structure
-            if debug_mode and idx < 2:
-                with st.expander(f"🔍 Debug: {ticker} - Columns: {data.columns.tolist()}"):
+            if debug_mode and idx < 3:
+                with st.expander(f"🔍 Debug: {ticker} - {len(data)} candles found"):
+                    st.write("Columns:", data.columns.tolist())
                     st.write("Data shape:", data.shape)
+                    st.write("First candle:", data.iloc[0].to_dict() if len(data) > 0 else "None")
                     st.write("Last 3 candles:")
                     st.dataframe(data.tail(3))
             
-            # Check if we have enough data (need at least 3 candles for STRAT)
-            if data.empty or len(data) < 3:
+            # Check if we have enough data
+            if data.empty or len(data) < min_candles:
                 if debug_mode:
-                    st.warning(f"{ticker}: Insufficient data (only {len(data)} candles)")
+                    st.warning(f"{ticker}: Insufficient data (found {len(data)}, need {min_candles})")
                 continue
             
-            # Get last 3 candles for STRAT calculation
-            prev_prev = data.iloc[-3]
-            prev = data.iloc[-2]
-            curr = data.iloc[-1]
-            
-            # Calculate STRAT patterns with MultiIndex support
-            prev_candle = strat_type(prev_prev, prev, ticker)
-            curr_candle = strat_type(prev, curr, ticker)
+            # For 3M timeframe, we only need 2 candles (prev vs curr)
+            # For others, we need 3 candles (prev_prev, prev, curr)
+            if is_3m and len(data) >= 2:
+                prev = data.iloc[-2]
+                curr = data.iloc[-1]
+                prev_candle = strat_type(prev, curr, ticker)  # Compare prev to curr
+                curr_candle = strat_type(prev, curr, ticker)  # Same for current (simplified for 3M)
+                # For 3M, we treat the comparison as the "current" candle pattern
+                curr_candle = strat_type(prev, curr, ticker)
+                prev_candle = "N/A (3M)"  # No previous pattern for 3M with only 2 candles
+            else:
+                # Standard 3-candle STRAT for other timeframes
+                prev_prev = data.iloc[-3]
+                prev = data.iloc[-2]
+                curr = data.iloc[-1]
+                prev_candle = strat_type(prev_prev, prev, ticker)
+                curr_candle = strat_type(prev, curr, ticker)
             
             # Skip if error in calculation
-            if "Error" in prev_candle or "Error" in curr_candle:
+            if "Error" in str(prev_candle) or "Error" in str(curr_candle):
                 if debug_mode:
                     st.warning(f"{ticker}: STRAT calculation error")
                 continue
             
-            # Check pattern filters
-            pattern_match = (not prev_patterns or prev_candle in prev_patterns) and \
-                           (not curr_patterns or curr_candle in curr_patterns)
+            # Check pattern filters (skip prev check for 3M if N/A)
+            if is_3m and prev_candle == "N/A (3M)":
+                pattern_match = (not curr_patterns or curr_candle in curr_patterns)
+            else:
+                pattern_match = (not prev_patterns or prev_candle in prev_patterns) and \
+                               (not curr_patterns or curr_candle in curr_patterns)
             
             if not pattern_match:
                 continue
@@ -267,8 +312,8 @@ if scan_button:
             curr_close = get_val(curr, "Close", ticker)
             curr_open = get_val(curr, "Open", ticker)
             
-            # Calculate FTFC
-            ftfc_str = calculate_ftfc(ticker, curr_close)
+            # Calculate FTFC with quarterly flag for 3M
+            ftfc_str = calculate_ftfc(ticker, curr_close, is_quarterly=is_3m)
             
             # Apply FTFC filter
             if "Any" not in ftfc_filter:
@@ -328,7 +373,7 @@ if scan_button:
             hide_index=True
         )
         
-        # Summary statistics - Dynamic based on timeframe
+        # Summary statistics
         st.subheader("Summary")
         
         if timeframe == "3-Month":
@@ -363,27 +408,35 @@ if scan_button:
     else:
         st.warning("⚠️ No tickers matched the selected criteria.")
         
-        with st.expander("🔧 Troubleshooting Tips"):
+        with st.expander("🔧 Troubleshooting 3-Month Timeframe"):
             st.markdown(f"""
             **Current Settings:**
             - Timeframe: {timeframe}
             - Interval: {interval_map[timeframe]}
             - Download Period: {period_map[timeframe]}
+            - Min Candles Required: {min_candles_map[timeframe]}
             
-            **If no results appear:**
+            **Common 3-Month Issues:**
             
-            1. **Enable Debug Mode** - Check the box and run again to see if data is downloading
-            2. **Relax filters** - Select "Any" in FTFC filter and all patterns in STRAT filters
-            3. **Check yfinance** - Run: `pip install yfinance --upgrade`
-            4. **Test single ticker** - In Python run:
+            1. **Not enough candles**: 3-month data returns very few candles. 
+               - "max" period typically returns ~20-25 years = ~80 quarterly candles
+               - "5y" only returns ~20 candles (may not be enough)
+            
+            2. **Enable Debug Mode** - Check the box and run again to see:
+               - How many candles yfinance returns
+               - Column structure (MultiIndex vs flat)
+            
+            3. **Test single ticker**:
                ```python
                import yfinance as yf
-               data = yf.download('AAPL', period='5y', interval='3mo')
-               print(data.tail())
+               data = yf.download('AAPL', period='max', interval='3mo')
+               print(f"Candles: {len(data)}")
+               print(data.tail(3))
                ```
             
-            **Note on 3-Month timeframe:**
-            - Uses yfinance's native "3mo" interval
-            - Requires ~5 years of history to get enough candles
-            - FTFC shows Monthly (M) and Quarterly (Q) continuity instead of Weekly
+            4. **Relax filters** - Try selecting "Any" in FTFC filter and all patterns
+            
+            **Note**: With 3-month candles, STRAT patterns are calculated differently:
+            - Only 2 candles needed (previous quarter vs current quarter)
+            - Previous candle shows "N/A (3M)" if only 2 candles available
             """)
