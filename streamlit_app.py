@@ -123,12 +123,12 @@ if scan_button:
             try:
 
                 # =========================
-                # FIX FOR 3-MONTH
+                # 3-MONTH (Quarterly FIX)
                 # =========================
                 if timeframe == "3-Month":
                     data = yf.download(
                         ticker,
-                        period="2y",        # <-- increased history
+                        period="3y",     # enough data for quarters
                         interval="1mo",
                         progress=False,
                         auto_adjust=False,
@@ -137,7 +137,8 @@ if scan_button:
                     if data.empty:
                         continue
 
-                    data = data.resample("3M").agg({
+                    # Proper Quarterly Candles
+                    data = data.resample("Q").agg({
                         "Open": "first",
                         "High": "max",
                         "Low": "min",
