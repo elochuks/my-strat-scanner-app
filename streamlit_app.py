@@ -11,9 +11,6 @@ st.set_page_config(page_title="STRAT Scanner", layout="wide")
 def load_tickers():
     tickers = set()
 
-    # -----------------------------
-    # S&P 500 (stable & live)
-    # -----------------------------
     try:
         sp500_url = (
             "https://raw.githubusercontent.com/"
@@ -24,9 +21,6 @@ def load_tickers():
     except Exception as e:
         st.warning(f"S&P 500 load failed: {e}")
 
-    # -----------------------------
-    # ETFs (curated, stable list)
-    # -----------------------------
     etfs = [
         "SPY", "IVV", "VOO", "QQQ", "DIA", "IWM",
         "XLF", "XLK", "XLE", "XLY", "XLP", "XLV",
@@ -38,9 +32,6 @@ def load_tickers():
     ]
     tickers.update(etfs)
 
-    # -----------------------------
-    # Indexes
-    # -----------------------------
     indexes = ["^GSPC", "^NDX", "^DJI", "^RUT", "^VIX"]
     tickers.update(indexes)
 
@@ -97,7 +88,6 @@ interval_map = {
     "2-Week": "2wk",
     "Weekly": "1wk",
     "Monthly": "1mo",
-    "3-Month": "1mo",  # FIX: use monthly and resample
 }
 
 available_patterns = [
@@ -131,21 +121,22 @@ if scan_button:
     with st.spinner("Scanning market..."):
         for ticker in TICKERS:
             try:
-                data = yf.download(
-                    ticker,
-                    period="9mo",
-                    interval=interval_map[timeframe],
-                    progress=False,
-                    auto_adjust=False,
-                )
 
-                if data.empty:
-                    continue
-
-                # -----------------------------
-                # FIX: Resample for 3-Month
-                # -----------------------------
+                # =========================
+                # FIX FOR 3-MONTH
+                # =========================
                 if timeframe == "3-Month":
+                    data = yf.download(
+                        ticker,
+                        period="2y",        # <-- increased history
+                        interval="1mo",
+                        progress=False,
+                        auto_adjust=False,
+                    )
+
+                    if data.empty:
+                        continue
+
                     data = data.resample("3M").agg({
                         "Open": "first",
                         "High": "max",
@@ -154,7 +145,16 @@ if scan_button:
                         "Volume": "sum"
                     }).dropna()
 
-                if len(data) < 3:
+                else:
+                    data = yf.download(
+                        ticker,
+                        period="9mo",
+                        interval=interval_map[timeframe],
+                        progress=False,
+                        auto_adjust=False,
+                    )
+
+                if data.empty or len(data) < 3:
                     continue
 
                 prev_prev = data.iloc[-3]
