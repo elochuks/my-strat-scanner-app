@@ -28,42 +28,22 @@ def load_tickers():
     # ETFs (curated, stable list)
     # -----------------------------
     etfs = [
-        # Index ETFs
         "SPY", "IVV", "VOO", "QQQ", "DIA", "IWM",
-
-        # Sector ETFs
         "XLF", "XLK", "XLE", "XLY", "XLP", "XLV",
         "XLI", "XLB", "XLRE", "XLU", "XLC",
-
-        # Growth / Value
         "VUG", "VTV", "IWF", "IWD",
-
-        # Bonds
         "TLT", "IEF", "SHY", "LQD", "HYG",
-
-        # Commodities
         "GLD", "SLV", "USO", "UNG",
-
-        # Volatility / Inverse
         "VXX", "SQQQ", "TQQQ"
     ]
     tickers.update(etfs)
 
     # -----------------------------
-    # Indexes (Yahoo symbols)
+    # Indexes
     # -----------------------------
-    indexes = [
-        "^GSPC",  # S&P 500
-        "^NDX",   # Nasdaq 100
-        "^DJI",   # Dow Jones
-        "^RUT",   # Russell 2000
-        "^VIX",   # Volatility Index
-    ]
+    indexes = ["^GSPC", "^NDX", "^DJI", "^RUT", "^VIX"]
     tickers.update(indexes)
 
-    # -----------------------------
-    # Final cleanup
-    # -----------------------------
     tickers = sorted(tickers)
 
     if not tickers:
@@ -85,18 +65,16 @@ def strat_type(prev, curr):
     curr_o = float(curr["Open"])
     curr_c = float(curr["Close"])
 
-    # Determine candle color
     candle_color = "Green" if curr_c > curr_o else "Red"
 
-    # STRAT logic
     if curr_h < prev_h and curr_l > prev_l:
         return "1 (Inside)"
     elif curr_h > prev_h and curr_l < prev_l:
         return "3 (Outside)"
     elif curr_h > prev_h:
-        return f"2U {candle_color}"  # 2U Red / 2U Green
+        return f"2U {candle_color}"
     elif curr_l < prev_l:
-        return f"2D {candle_color}"  # 2D Red / 2D Green
+        return f"2D {candle_color}"
     else:
         return "Undefined"
 
@@ -107,7 +85,6 @@ def strat_type(prev, curr):
 st.title("📊 STRAT Scanner")
 st.caption(f"Scanning **{len(TICKERS)}** tickers (S&P 500 + ETFs + Indexes)")
 
-# Timeframes
 timeframe = st.selectbox(
     "Select Timeframe",
     ["4-Hour", "2-Day", "Daily", "2-Week", "Weekly", "Monthly", "3-Month"],
@@ -120,10 +97,9 @@ interval_map = {
     "2-Week": "2wk",
     "Weekly": "1wk",
     "Monthly": "1mo",
-    "3-Month": "3mo",
+    "3-Month": "1mo",  # FIX: use monthly and resample
 }
 
-# STRAT patterns with color options
 available_patterns = [
     "1 (Inside)", "3 (Outside)",
     "2U Red", "2U Green",
@@ -155,7 +131,6 @@ if scan_button:
     with st.spinner("Scanning market..."):
         for ticker in TICKERS:
             try:
-                # Download main interval data
                 data = yf.download(
                     ticker,
                     period="9mo",
@@ -164,7 +139,22 @@ if scan_button:
                     auto_adjust=False,
                 )
 
-                if data.empty or len(data) < 3:
+                if data.empty:
+                    continue
+
+                # -----------------------------
+                # FIX: Resample for 3-Month
+                # -----------------------------
+                if timeframe == "3-Month":
+                    data = data.resample("3M").agg({
+                        "Open": "first",
+                        "High": "max",
+                        "Low": "min",
+                        "Close": "last",
+                        "Volume": "sum"
+                    }).dropna()
+
+                if len(data) < 3:
                     continue
 
                 prev_prev = data.iloc[-3]
@@ -179,14 +169,11 @@ if scan_button:
                     and (not curr_patterns or curr_candle in curr_patterns)
                 ):
 
-                    # -----------------------
-                    # Calculate FTFC (Timeframe Continuity)
-                    # -----------------------
                     ftfc_result = []
 
-                    # Monthly data
                     monthly_data = yf.download(
-                        ticker, period="12mo", interval="1mo", progress=False, auto_adjust=False
+                        ticker, period="12mo", interval="1mo",
+                        progress=False, auto_adjust=False
                     )
                     if not monthly_data.empty:
                         current_month_open = monthly_data.iloc[-1]["Open"]
@@ -195,9 +182,9 @@ if scan_button:
                         elif float(curr["Close"]) < float(current_month_open):
                             ftfc_result.append("M: Bearish")
 
-                    # Weekly data
                     weekly_data = yf.download(
-                        ticker, period="12mo", interval="1wk", progress=False, auto_adjust=False
+                        ticker, period="12mo", interval="1wk",
+                        progress=False, auto_adjust=False
                     )
                     if not weekly_data.empty:
                         current_week_open = weekly_data.iloc[-1]["Open"]
@@ -208,7 +195,6 @@ if scan_button:
 
                     ftfc_str = ", ".join(ftfc_result) if ftfc_result else "N/A"
 
-                    # Append result with FTFC
                     results.append(
                         {
                             "Ticker": ticker,
