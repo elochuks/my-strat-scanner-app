@@ -84,8 +84,9 @@ def strat_type(prev, curr, ticker):
 # =====================================================
 def calculate_ftfc(ticker, current_close):
     """
-    Calculate FTFC: Compare current price to Monthly and Weekly opening prices
-    Returns format: "M: Bullish, W: Bearish" or "N/A"
+    Calculate FTFC: Compare current price to Monthly and Quarterly opening prices
+    For 3M timeframe, we compare to Quarterly open instead of Weekly
+    Returns format: "M: Bullish, Q: Bearish" or "N/A"
     """
     ftfc_results = []
     
@@ -93,7 +94,7 @@ def calculate_ftfc(ticker, current_close):
     try:
         monthly_data = yf.download(
             ticker, 
-            period="3mo", 
+            period="6mo", 
             interval="1mo", 
             progress=False, 
             auto_adjust=True
@@ -113,27 +114,27 @@ def calculate_ftfc(ticker, current_close):
     except Exception:
         pass
     
-    # Weekly FTFC
+    # Quarterly FTFC (3-Month) - For higher timeframe context
     try:
-        weekly_data = yf.download(
+        quarterly_data = yf.download(
             ticker, 
-            period="1mo", 
-            interval="1wk", 
+            period="1y", 
+            interval="3mo", 
             progress=False, 
             auto_adjust=True
         )
         
-        if not weekly_data.empty and len(weekly_data) >= 1:
-            # Get current week's open price
-            if isinstance(weekly_data.columns, pd.MultiIndex):
-                weekly_open = float(weekly_data.iloc[-1][("Open", ticker)])
+        if not quarterly_data.empty and len(quarterly_data) >= 1:
+            # Get current quarter's open price
+            if isinstance(quarterly_data.columns, pd.MultiIndex):
+                quarterly_open = float(quarterly_data.iloc[-1][("Open", ticker)])
             else:
-                weekly_open = float(weekly_data.iloc[-1]["Open"])
+                quarterly_open = float(quarterly_data.iloc[-1]["Open"])
             
-            if current_close > weekly_open:
-                ftfc_results.append("W: Bullish")
-            elif current_close < weekly_open:
-                ftfc_results.append("W: Bearish")
+            if current_close > quarterly_open:
+                ftfc_results.append("Q: Bullish")
+            elif current_close < quarterly_open:
+                ftfc_results.append("Q: Bearish")
     except Exception:
         pass
     
@@ -145,8 +146,27 @@ def calculate_ftfc(ticker, current_close):
 st.title("📊 STRAT Scanner with FTFC")
 st.caption(f"Scanning **{len(TICKERS)}** tickers | STRAT Patterns + Timeframe Continuity")
 
-timeframe = st.selectbox("Select Timeframe", ["Daily", "Weekly", "Monthly"])
-interval_map = {"Daily": "1d", "Weekly": "1wk", "Monthly": "1mo"}
+# UPDATED: Added 3-Month timeframe
+timeframe = st.selectbox(
+    "Select Timeframe", 
+    ["Daily", "Weekly", "Monthly", "3-Month"]
+)
+
+# UPDATED: Interval mapping with 3mo
+interval_map = {
+    "Daily": "1d", 
+    "Weekly": "1wk", 
+    "Monthly": "1mo",
+    "3-Month": "3mo"
+}
+
+# Period mapping (how much history to download)
+period_map = {
+    "Daily": "6mo",
+    "Weekly": "12mo", 
+    "Monthly": "2y",
+    "3-Month": "5y"  # Need more history for 3mo candles
+}
 
 available_patterns = ["1 (Inside)", "3 (Outside)", "2U Red", "2U Green", "2D Red", "2D Green"]
 
@@ -157,9 +177,15 @@ with col1:
 with col2:
     curr_patterns = st.multiselect("Current Candle", options=available_patterns, default=available_patterns)
 
-# FTFC Filter Section
+# FTFC Filter Section - Updated for 3M timeframe
 st.subheader("FTFC (Follow The Timeframe Continuity) Filter")
-ftfc_options = ["Any", "M: Bullish", "M: Bearish", "W: Bullish", "W: Bearish", "Both Bullish", "Both Bearish"]
+
+# Dynamic FTFC options based on timeframe
+if timeframe == "3-Month":
+    ftfc_options = ["Any", "M: Bullish", "M: Bearish", "Q: Bullish", "Q: Bearish", "Both Bullish", "Both Bearish"]
+else:
+    ftfc_options = ["Any", "M: Bullish", "M: Bearish", "W: Bullish", "W: Bearish", "Both Bullish", "Both Bearish"]
+
 ftfc_filter = st.multiselect("FTFC Direction", options=ftfc_options, default=["Any"])
 
 # Options
@@ -172,7 +198,7 @@ with col4:
 scan_button = st.button("🔍 Run Scanner", type="primary")
 
 # =====================================================
-# SCANNER WITH FTFC
+# SCANNER WITH FTFC AND 3-MONTH SUPPORT
 # =====================================================
 if scan_button:
     results = []
@@ -183,17 +209,20 @@ if scan_button:
     progress_bar = st.progress(0)
     status_text = st.empty()
     
+    # Get appropriate period for selected timeframe
+    download_period = period_map[timeframe]
+    
     for idx, ticker in enumerate(tickers_to_scan):
         try:
             # Update progress
             progress = (idx + 1) / total
             progress_bar.progress(min(progress, 0.99))
-            status_text.text(f"Scanning {ticker}... ({idx+1}/{total})")
+            status_text.text(f"Scanning {ticker}... ({idx+1}/{total}) | TF: {timeframe}")
             
-            # Download main timeframe data
+            # Download main timeframe data with appropriate period
             data = yf.download(
                 ticker,
-                period="6mo",
+                period=download_period,
                 interval=interval_map[timeframe],
                 progress=False,
                 auto_adjust=True,
@@ -203,9 +232,13 @@ if scan_button:
             if debug_mode and idx < 2:
                 with st.expander(f"🔍 Debug: {ticker} - Columns: {data.columns.tolist()}"):
                     st.write("Data shape:", data.shape)
+                    st.write("Last 3 candles:")
                     st.dataframe(data.tail(3))
             
+            # Check if we have enough data (need at least 3 candles for STRAT)
             if data.empty or len(data) < 3:
+                if debug_mode:
+                    st.warning(f"{ticker}: Insufficient data (only {len(data)} candles)")
                 continue
             
             # Get last 3 candles for STRAT calculation
@@ -219,6 +252,8 @@ if scan_button:
             
             # Skip if error in calculation
             if "Error" in prev_candle or "Error" in curr_candle:
+                if debug_mode:
+                    st.warning(f"{ticker}: STRAT calculation error")
                 continue
             
             # Check pattern filters
@@ -238,10 +273,12 @@ if scan_button:
             # Apply FTFC filter
             if "Any" not in ftfc_filter:
                 if "Both Bullish" in ftfc_filter:
-                    if not ("M: Bullish" in ftfc_str and "W: Bullish" in ftfc_str):
+                    if not (("M: Bullish" in ftfc_str and "W: Bullish" in ftfc_str) or 
+                            ("M: Bullish" in ftfc_str and "Q: Bullish" in ftfc_str)):
                         continue
                 elif "Both Bearish" in ftfc_filter:
-                    if not ("M: Bearish" in ftfc_str and "W: Bearish" in ftfc_str):
+                    if not (("M: Bearish" in ftfc_str and "W: Bearish" in ftfc_str) or
+                            ("M: Bearish" in ftfc_str and "Q: Bearish" in ftfc_str)):
                         continue
                 else:
                     # Check if any selected FTFC matches
@@ -278,11 +315,11 @@ if scan_button:
                 return "color: #cc0000; font-weight: bold"
             return ""
         
-        st.success(f"🎯 Found **{len(df)}** matching tickers out of {total} scanned")
+        st.success(f"🎯 Found **{len(df)}** matching tickers out of {total} scanned | Timeframe: {timeframe}")
         
         # Download button
         csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Download CSV", csv, "strat_scanner_results.csv", "text/csv")
+        st.download_button("📥 Download CSV", csv, f"strat_scanner_{timeframe.lower().replace('-', '_')}_results.csv", "text/csv")
         
         # Display with FTFC styling
         st.dataframe(
@@ -291,28 +328,48 @@ if scan_button:
             hide_index=True
         )
         
-        # Summary statistics
+        # Summary statistics - Dynamic based on timeframe
         st.subheader("Summary")
-        col_stats1, col_stats2, col_stats3, col_stats4 = st.columns(4)
         
-        with col_stats1:
-            bullish_ftfc = df['FTFC'].str.contains('M: Bullish').sum()
-            st.metric("Monthly Bullish", f"{bullish_ftfc}")
-        with col_stats2:
-            bearish_ftfc = df['FTFC'].str.contains('M: Bearish').sum()
-            st.metric("Monthly Bearish", f"{bearish_ftfc}")
-        with col_stats3:
-            weekly_bull = df['FTFC'].str.contains('W: Bullish').sum()
-            st.metric("Weekly Bullish", f"{weekly_bull}")
-        with col_stats4:
-            weekly_bear = df['FTFC'].str.contains('W: Bearish').sum()
-            st.metric("Weekly Bearish", f"{weekly_bear}")
+        if timeframe == "3-Month":
+            col_stats1, col_stats2, col_stats3, col_stats4 = st.columns(4)
+            with col_stats1:
+                bullish_m = df['FTFC'].str.contains('M: Bullish').sum()
+                st.metric("Monthly Bullish", f"{bullish_m}")
+            with col_stats2:
+                bearish_m = df['FTFC'].str.contains('M: Bearish').sum()
+                st.metric("Monthly Bearish", f"{bearish_m}")
+            with col_stats3:
+                bullish_q = df['FTFC'].str.contains('Q: Bullish').sum()
+                st.metric("Quarterly Bullish", f"{bullish_q}")
+            with col_stats4:
+                bearish_q = df['FTFC'].str.contains('Q: Bearish').sum()
+                st.metric("Quarterly Bearish", f"{bearish_q}")
+        else:
+            col_stats1, col_stats2, col_stats3, col_stats4 = st.columns(4)
+            with col_stats1:
+                bullish_m = df['FTFC'].str.contains('M: Bullish').sum()
+                st.metric("Monthly Bullish", f"{bullish_m}")
+            with col_stats2:
+                bearish_m = df['FTFC'].str.contains('M: Bearish').sum()
+                st.metric("Monthly Bearish", f"{bearish_m}")
+            with col_stats3:
+                bullish_w = df['FTFC'].str.contains('W: Bullish').sum()
+                st.metric("Weekly Bullish", f"{bullish_w}")
+            with col_stats4:
+                bearish_w = df['FTFC'].str.contains('W: Bearish').sum()
+                st.metric("Weekly Bearish", f"{bearish_w}")
             
     else:
         st.warning("⚠️ No tickers matched the selected criteria.")
         
         with st.expander("🔧 Troubleshooting Tips"):
-            st.markdown("""
+            st.markdown(f"""
+            **Current Settings:**
+            - Timeframe: {timeframe}
+            - Interval: {interval_map[timeframe]}
+            - Download Period: {period_map[timeframe]}
+            
             **If no results appear:**
             
             1. **Enable Debug Mode** - Check the box and run again to see if data is downloading
@@ -321,12 +378,12 @@ if scan_button:
             4. **Test single ticker** - In Python run:
                ```python
                import yfinance as yf
-               data = yf.download('AAPL', period='5d')
-               print(data.columns)  # Should show MultiIndex like ('Close', 'AAPL')
+               data = yf.download('AAPL', period='5y', interval='3mo')
+               print(data.tail())
                ```
             
-            **Common issues:**
-            - **MultiIndex columns**: Modern yfinance returns `('Close', 'AAPL')` instead of just `'Close'`
-            - **Rate limiting**: Too many requests to Yahoo Finance
-            - **Invalid intervals**: Only use 1d, 1wk, 1mo (not 2d, 4h, etc.)
+            **Note on 3-Month timeframe:**
+            - Uses yfinance's native "3mo" interval
+            - Requires ~5 years of history to get enough candles
+            - FTFC shows Monthly (M) and Quarterly (Q) continuity instead of Weekly
             """)
