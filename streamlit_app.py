@@ -128,7 +128,7 @@ if scan_button:
                 if timeframe == "3-Month":
                     data = yf.download(
                         ticker,
-                        period="3y",     # enough data for quarters
+                        period="3y",
                         interval="1mo",
                         progress=False,
                         auto_adjust=False,
@@ -137,7 +137,7 @@ if scan_button:
                     if data.empty:
                         continue
 
-                    # Proper Quarterly Candles
+                    # Build proper quarterly candles
                     data = data.resample("Q").agg({
                         "Open": "first",
                         "High": "max",
@@ -145,6 +145,10 @@ if scan_button:
                         "Close": "last",
                         "Volume": "sum"
                     }).dropna()
+
+                    # Drop unfinished current quarter
+                    if len(data) > 1:
+                        data = data.iloc[:-1]
 
                 else:
                     data = yf.download(
