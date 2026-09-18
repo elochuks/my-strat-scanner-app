@@ -1,148 +1,214 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-from datetime import datetime
+import time
+
 
 # ============================================================
 # PAGE CONFIG
 # ============================================================
 
 st.set_page_config(
-    page_title="Weekly High / Low STRAT Scanner",
+    page_title="S&P 500 Weekly Sweep Scanner",
     page_icon="📊",
     layout="wide"
 )
 
-st.title("📊 Weekly High / Low STRAT Scanner")
+st.title("📊 S&P 500 Weekly High / Low Scanner")
 
 st.caption(
-    "Find stocks that take out the previous week's high or low, "
-    "reclaim/reject the level, and identify STRAT + FTFC conditions."
+    "Scans the S&P 500 for stocks that take out the previous "
+    "week's high or low."
 )
 
 
 # ============================================================
-# TICKER UNIVERSE
+# S&P 500 UNIVERSE
 # ============================================================
 
-@st.cache_data(ttl=86400)
-def get_tickers():
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_sp500_tickers():
 
-    # --------------------------------------------------------
-    # Starter universe
-    #
-    # This intentionally does NOT scrape Wikipedia.
-    # Add/remove symbols as desired.
-    # --------------------------------------------------------
+    url = (
+        "https://raw.githubusercontent.com/"
+        "datasets/s-and-p-500-companies/"
+        "main/data/constituents.csv"
+    )
 
-    tickers = [
+    try:
 
-        # Mega / Large Cap
-        "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL",
-        "GOOG", "META", "TSLA", "AVGO", "BRK-B",
-        "LLY", "JPM", "V", "MA", "WMT",
-        "XOM", "COST", "NFLX", "ORCL", "HD",
+        df = pd.read_csv(url)
 
-        # Technology
-        "AMD", "INTC", "QCOM", "MU", "AMAT",
-        "LRCX", "KLAC", "MRVL", "ADI", "TXN",
-        "CRM", "NOW", "ADBE", "PANW", "CRWD",
-        "PLTR", "SNOW", "DDOG", "NET", "MDB",
+        if "Symbol" not in df.columns:
+            raise ValueError(
+                "The S&P 500 dataset does not contain "
+                "a Symbol column."
+            )
 
-        # Financial
-        "BAC", "WFC", "GS", "MS", "C",
-        "SCHW", "AXP", "COF", "BLK", "SPGI",
+        tickers = (
+            df["Symbol"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .tolist()
+        )
 
-        # Consumer
-        "NKE", "SBUX", "MCD", "TGT", "LOW",
-        "TJX", "ROST", "CMG", "BKNG", "ABNB",
+        # Yahoo Finance format:
+        # BRK.B -> BRK-B
+        # BF.B  -> BF-B
+        tickers = [
+            ticker.replace(".", "-")
+            for ticker in tickers
+        ]
 
-        # Healthcare
-        "UNH", "JNJ", "ABBV", "MRK", "PFE",
-        "TMO", "AMGN", "GILD", "ISRG", "VRTX",
+        tickers = sorted(set(tickers))
 
-        # Industrial
-        "CAT", "DE", "GE", "HON", "UPS",
-        "FDX", "BA", "RTX", "LMT", "MMM",
+        return tickers
 
-        # Energy
-        "CVX", "COP", "SLB", "EOG", "OXY",
+    except Exception as e:
 
-        # Communication / Media
-        "DIS", "CMCSA", "T", "VZ", "TMUS",
+        st.error(
+            f"Unable to load S&P 500 ticker dataset: {e}"
+        )
 
-        # Popular Trading Names
-        "COIN", "HOOD", "RBLX", "SOFI", "SHOP",
-        "UBER", "DASH", "RIVN", "LCID",
-
-        # ETFs
-        "SPY", "QQQ", "IWM", "DIA",
-        "XLK", "XLF", "XLE", "XLV",
-        "XLY", "XLP", "XLI", "XLU",
-        "SMH", "ARKK", "TLT", "GLD"
-    ]
-
-    return sorted(list(set(tickers)))
+        return []
 
 
 # ============================================================
-# DOWNLOAD DATA
+# DOWNLOAD MARKET DATA
 # ============================================================
 
 @st.cache_data(ttl=900, show_spinner=False)
 def download_market_data(tickers):
 
+    all_data = {}
+
     if not tickers:
-        return pd.DataFrame()
+        return all_data
 
-    try:
+    # Smaller batches are generally more reliable
+    # than requesting the entire S&P 500 at once.
+    batch_size = 50
 
-        data = yf.download(
-            tickers=tickers,
-            period="6mo",
-            interval="1d",
-            group_by="ticker",
-            auto_adjust=False,
-            threads=True,
-            progress=False
-        )
+    for start in range(
+        0,
+        len(tickers),
+        batch_size
+    ):
 
-        return data
+        batch = tickers[
+            start:start + batch_size
+        ]
 
-    except Exception as e:
+        try:
 
-        st.error(f"Market data download failed: {e}")
+            data = yf.download(
+                tickers=batch,
+                period="6mo",
+                interval="1d",
+                group_by="ticker",
+                auto_adjust=False,
+                threads=True,
+                progress=False,
+                timeout=30
+            )
 
-        return pd.DataFrame()
+            if data is None or data.empty:
+                continue
+
+            # ------------------------------------------------
+            # Multiple symbols
+            # ------------------------------------------------
+
+            if len(batch) > 1:
+
+                if not isinstance(
+                    data.columns,
+                    pd.MultiIndex
+                ):
+                    continue
+
+                level_zero = (
+                    data.columns
+                    .get_level_values(0)
+                    .unique()
+                )
+
+                for ticker in batch:
+
+                    try:
+
+                        if ticker not in level_zero:
+                            continue
+
+                        ticker_df = (
+                            data[ticker]
+                            .copy()
+                        )
+
+                        if not ticker_df.empty:
+                            all_data[ticker] = ticker_df
+
+                    except Exception:
+                        continue
+
+            # ------------------------------------------------
+            # Single symbol
+            # ------------------------------------------------
+
+            else:
+
+                ticker = batch[0]
+
+                ticker_df = data.copy()
+
+                if isinstance(
+                    ticker_df.columns,
+                    pd.MultiIndex
+                ):
+
+                    ticker_df.columns = (
+                        ticker_df.columns
+                        .get_level_values(-1)
+                    )
+
+                if not ticker_df.empty:
+                    all_data[ticker] = ticker_df
+
+        except Exception:
+            continue
+
+        # Small pause between Yahoo requests
+        time.sleep(0.25)
+
+    return all_data
 
 
 # ============================================================
-# GET INDIVIDUAL TICKER DATA
+# CLEAN TICKER DATA
 # ============================================================
 
-def get_ticker_dataframe(data, ticker, total_tickers):
+def clean_ticker_dataframe(data, ticker):
 
     try:
 
-        # Multiple ticker download
-        if total_tickers > 1:
+        if ticker not in data:
+            return None
 
-            if ticker not in data.columns.get_level_values(0):
-                return None
-
-            df = data[ticker].copy()
-
-        # Single ticker download
-        else:
-
-            df = data.copy()
+        df = data[ticker].copy()
 
         # Flatten columns if necessary
-        if isinstance(df.columns, pd.MultiIndex):
+        if isinstance(
+            df.columns,
+            pd.MultiIndex
+        ):
 
-            df.columns = df.columns.get_level_values(-1)
+            df.columns = (
+                df.columns
+                .get_level_values(-1)
+            )
 
-        required_columns = [
+        required = [
             "Open",
             "High",
             "Low",
@@ -150,18 +216,45 @@ def get_ticker_dataframe(data, ticker, total_tickers):
             "Volume"
         ]
 
-        for col in required_columns:
+        if not all(
+            col in df.columns
+            for col in required
+        ):
+            return None
 
-            if col not in df.columns:
-                return None
+        df = df[required].copy()
 
-        df = df[required_columns]
+        # Convert everything to numeric
+        for col in required:
+
+            df[col] = pd.to_numeric(
+                df[col],
+                errors="coerce"
+            )
 
         df = df.dropna(
-            subset=["Open", "High", "Low", "Close"]
+            subset=[
+                "Open",
+                "High",
+                "Low",
+                "Close"
+            ]
         )
 
-        df.index = pd.to_datetime(df.index)
+        if df.empty:
+            return None
+
+        df.index = pd.to_datetime(
+            df.index
+        )
+
+        # Remove timezone if Yahoo returns one
+        try:
+            df.index = df.index.tz_localize(None)
+        except Exception:
+            pass
+
+        df = df.sort_index()
 
         return df
 
@@ -171,175 +264,208 @@ def get_ticker_dataframe(data, ticker, total_tickers):
 
 
 # ============================================================
-# WEEK IDENTIFICATION
-# ============================================================
-
-def add_week_columns(df):
-
-    df = df.copy()
-
-    # Monday is start of week
-    df["Week"] = df.index.to_period("W-FRI")
-
-    return df
-
-
-# ============================================================
-# PREVIOUS WEEK LEVELS
+# WEEKLY LEVELS
 # ============================================================
 
 def get_weekly_levels(df):
 
-    df = add_week_columns(df)
+    if df is None or len(df) < 10:
+        return None
 
-    weekly = df.groupby("Week").agg({
+    temp = df.copy()
 
-        "Open": "first",
-        "High": "max",
-        "Low": "min",
-        "Close": "last",
-        "Volume": "sum"
+    # W-FRI gives trading weeks ending Friday.
+    temp["Week"] = (
+        temp.index.to_period("W-FRI")
+    )
 
-    })
+    weekly = temp.groupby(
+        "Week"
+    ).agg(
+        Open=("Open", "first"),
+        High=("High", "max"),
+        Low=("Low", "min"),
+        Close=("Close", "last"),
+        Volume=("Volume", "sum")
+    )
 
     if len(weekly) < 2:
         return None
 
-    current_week_period = df["Week"].iloc[-1]
+    # Current trading week
+    current_week_period = (
+        temp["Week"].iloc[-1]
+    )
 
-    current_week_data = df[
-        df["Week"] == current_week_period
-    ]
+    current_week_data = temp[
+        temp["Week"]
+        == current_week_period
+    ].copy()
 
+    # All weeks before current week
     previous_weeks = weekly[
-        weekly.index < current_week_period
+        weekly.index
+        < current_week_period
     ]
 
     if previous_weeks.empty:
         return None
 
-    previous_week = previous_weeks.iloc[-1]
+    # Most recent completed week
+    previous_week = (
+        previous_weeks.iloc[-1]
+    )
 
     return {
 
         "previous_week_high":
-            float(previous_week["High"]),
+            float(
+                previous_week["High"]
+            ),
 
         "previous_week_low":
-            float(previous_week["Low"]),
+            float(
+                previous_week["Low"]
+            ),
 
         "previous_week_open":
-            float(previous_week["Open"]),
+            float(
+                previous_week["Open"]
+            ),
 
         "previous_week_close":
-            float(previous_week["Close"]),
-
-        "current_week_high":
-            float(current_week_data["High"].max()),
-
-        "current_week_low":
-            float(current_week_data["Low"].min()),
+            float(
+                previous_week["Close"]
+            ),
 
         "current_week_open":
-            float(current_week_data["Open"].iloc[0]),
+            float(
+                current_week_data[
+                    "Open"
+                ].iloc[0]
+            ),
+
+        "current_week_high":
+            float(
+                current_week_data[
+                    "High"
+                ].max()
+            ),
+
+        "current_week_low":
+            float(
+                current_week_data[
+                    "Low"
+                ].min()
+            ),
 
         "current_week_close":
-            float(current_week_data["Close"].iloc[-1]),
+            float(
+                current_week_data[
+                    "Close"
+                ].iloc[-1]
+            ),
 
-        "current_week_period":
-            str(current_week_period),
-
-        "current_week_data":
-            current_week_data
+        "current_week":
+            str(
+                current_week_period
+            )
     }
 
 
 # ============================================================
-# DAILY STRAT
+# DAILY STRAT PATTERN
 # ============================================================
 
 def get_daily_strat(df):
 
-    if len(df) < 2:
-        return None
+    if df is None or len(df) < 2:
+        return "N/A"
 
     previous = df.iloc[-2]
-
     current = df.iloc[-1]
 
-    previous_high = float(previous["High"])
-    previous_low = float(previous["Low"])
+    previous_high = float(
+        previous["High"]
+    )
 
-    current_open = float(current["Open"])
-    current_high = float(current["High"])
-    current_low = float(current["Low"])
-    current_close = float(current["Close"])
+    previous_low = float(
+        previous["Low"]
+    )
+
+    current_open = float(
+        current["Open"]
+    )
+
+    current_high = float(
+        current["High"]
+    )
+
+    current_low = float(
+        current["Low"]
+    )
+
+    current_close = float(
+        current["Close"]
+    )
 
     # --------------------------------------------------------
-    # STRAT candle type
+    # Outside bar
     # --------------------------------------------------------
 
     if (
-        current_high < previous_high
-        and current_low > previous_low
-    ):
-
-        pattern = "1 Inside"
-
-    elif (
         current_high > previous_high
-        and current_low < previous_low
+        and
+        current_low < previous_low
     ):
 
-        pattern = "3 Outside"
+        return "3 Outside"
 
-    elif current_high > previous_high:
+    # --------------------------------------------------------
+    # Inside bar
+    # --------------------------------------------------------
+
+    if (
+        current_high <= previous_high
+        and
+        current_low >= previous_low
+    ):
+
+        return "1 Inside"
+
+    # --------------------------------------------------------
+    # Directional up
+    # --------------------------------------------------------
+
+    if current_high > previous_high:
 
         if current_close >= current_open:
-            pattern = "2U Green"
-        else:
-            pattern = "2U Red"
+            return "2U Green"
 
-    elif current_low < previous_low:
+        return "2U Red"
+
+    # --------------------------------------------------------
+    # Directional down
+    # --------------------------------------------------------
+
+    if current_low < previous_low:
 
         if current_close >= current_open:
-            pattern = "2D Green"
-        else:
-            pattern = "2D Red"
+            return "2D Green"
 
-    else:
+        return "2D Red"
 
-        pattern = "Undefined"
-
-    return {
-
-        "pattern": pattern,
-
-        "previous_day_high":
-            previous_high,
-
-        "previous_day_low":
-            previous_low,
-
-        "current_day_high":
-            current_high,
-
-        "current_day_low":
-            current_low,
-
-        "current_day_open":
-            current_open,
-
-        "current_day_close":
-            current_close
-    }
+    return "N/A"
 
 
 # ============================================================
 # FTFC
 # ============================================================
 
-def calculate_ftfc(df, weekly_levels):
+def calculate_ftfc(
+    df,
+    weekly_levels
+):
 
     try:
 
@@ -348,14 +474,14 @@ def calculate_ftfc(df, weekly_levels):
         )
 
         # ----------------------------------------------------
-        # Weekly FTFC
-        #
-        # Current price relative to current weekly open
+        # WEEKLY
         # ----------------------------------------------------
 
-        weekly_open = weekly_levels[
-            "current_week_open"
-        ]
+        weekly_open = (
+            weekly_levels[
+                "current_week_open"
+            ]
+        )
 
         if current_price > weekly_open:
 
@@ -369,15 +495,18 @@ def calculate_ftfc(df, weekly_levels):
 
             weekly_ftfc = "Neutral"
 
-
         # ----------------------------------------------------
-        # Monthly FTFC
+        # MONTHLY
         # ----------------------------------------------------
 
-        current_month = df.index[-1].to_period("M")
+        current_month = (
+            df.index[-1]
+            .to_period("M")
+        )
 
         month_data = df[
-            df.index.to_period("M") == current_month
+            df.index.to_period("M")
+            == current_month
         ]
 
         if month_data.empty:
@@ -388,36 +517,47 @@ def calculate_ftfc(df, weekly_levels):
         else:
 
             monthly_open = float(
-                month_data["Open"].iloc[0]
+                month_data[
+                    "Open"
+                ].iloc[0]
             )
 
-            if current_price > monthly_open:
+            if (
+                current_price
+                > monthly_open
+            ):
 
                 monthly_ftfc = "Up"
 
-            elif current_price < monthly_open:
+            elif (
+                current_price
+                < monthly_open
+            ):
 
                 monthly_ftfc = "Down"
 
             else:
 
-                monthly_ftfc = "Neutral"
-
+                monthly_ftfc = (
+                    "Neutral"
+                )
 
         # ----------------------------------------------------
-        # M + W FTFC
+        # M + W ALIGNMENT
         # ----------------------------------------------------
 
         if (
             weekly_ftfc == "Up"
-            and monthly_ftfc == "Up"
+            and
+            monthly_ftfc == "Up"
         ):
 
             ftfc = "FTFC Up"
 
         elif (
             weekly_ftfc == "Down"
-            and monthly_ftfc == "Down"
+            and
+            monthly_ftfc == "Down"
         ):
 
             ftfc = "FTFC Down"
@@ -426,16 +566,15 @@ def calculate_ftfc(df, weekly_levels):
 
             ftfc = "Mixed"
 
-
         return {
 
-            "weekly_ftfc":
+            "weekly":
                 weekly_ftfc,
 
-            "monthly_ftfc":
+            "monthly":
                 monthly_ftfc,
 
-            "ftfc":
+            "alignment":
                 ftfc,
 
             "weekly_open":
@@ -449,9 +588,9 @@ def calculate_ftfc(df, weekly_levels):
 
         return {
 
-            "weekly_ftfc": "N/A",
-            "monthly_ftfc": "N/A",
-            "ftfc": "N/A",
+            "weekly": "N/A",
+            "monthly": "N/A",
+            "alignment": "N/A",
             "weekly_open": None,
             "monthly_open": None
         }
@@ -461,7 +600,10 @@ def calculate_ftfc(df, weekly_levels):
 # RELATIVE VOLUME
 # ============================================================
 
-def calculate_relative_volume(df, lookback=20):
+def calculate_rvol(
+    df,
+    lookback=20
+):
 
     try:
 
@@ -478,10 +620,13 @@ def calculate_relative_volume(df, lookback=20):
             .mean()
         )
 
-        if average_volume == 0:
+        if average_volume <= 0:
             return None
 
-        return current_volume / average_volume
+        return (
+            current_volume
+            / average_volume
+        )
 
     except Exception:
 
@@ -489,83 +634,170 @@ def calculate_relative_volume(df, lookback=20):
 
 
 # ============================================================
+# FIND EXACT SWEEP DATE
+# ============================================================
+
+def find_sweep_dates(
+    df,
+    previous_week_high,
+    previous_week_low
+):
+
+    temp = df.copy()
+
+    current_period = (
+        temp.index[-1]
+        .to_period("W-FRI")
+    )
+
+    current_week = temp[
+        temp.index.to_period(
+            "W-FRI"
+        )
+        == current_period
+    ]
+
+    high_sweep_date = None
+    low_sweep_date = None
+
+    # --------------------------------------------------------
+    # Find first day that took the level
+    # --------------------------------------------------------
+
+    for date, row in (
+        current_week.iterrows()
+    ):
+
+        if (
+            low_sweep_date is None
+            and
+            float(row["Low"])
+            < previous_week_low
+        ):
+
+            low_sweep_date = (
+                date.strftime(
+                    "%Y-%m-%d"
+                )
+            )
+
+        if (
+            high_sweep_date is None
+            and
+            float(row["High"])
+            > previous_week_high
+        ):
+
+            high_sweep_date = (
+                date.strftime(
+                    "%Y-%m-%d"
+                )
+            )
+
+    return (
+        low_sweep_date,
+        high_sweep_date
+    )
+
+
+# ============================================================
 # MAIN SCANNER
 # ============================================================
 
-def scan_market(tickers, data):
+def scan_market(
+    tickers,
+    market_data
+):
 
     results = []
 
-    total_tickers = len(tickers)
+    total = len(tickers)
 
-    progress_bar = st.progress(0)
+    progress = st.progress(0)
 
     status = st.empty()
 
-    for i, ticker in enumerate(tickers):
+    for index, ticker in enumerate(
+        tickers
+    ):
 
         status.text(
             f"Scanning {ticker} "
-            f"({i + 1}/{total_tickers})"
+            f"({index + 1}/{total})"
         )
 
         try:
 
-            df = get_ticker_dataframe(
-                data,
-                ticker,
-                total_tickers
+            # ------------------------------------------------
+            # DATA
+            # ------------------------------------------------
+
+            df = clean_ticker_dataframe(
+                market_data,
+                ticker
             )
 
-            if df is None or len(df) < 30:
+            if (
+                df is None
+                or
+                len(df) < 30
+            ):
 
-                progress_bar.progress(
-                    (i + 1) / total_tickers
+                progress.progress(
+                    (index + 1)
+                    / total
                 )
 
                 continue
 
-
-            # =================================================
+            # ------------------------------------------------
             # WEEKLY LEVELS
-            # =================================================
+            # ------------------------------------------------
 
-            weekly_levels = get_weekly_levels(df)
+            levels = get_weekly_levels(
+                df
+            )
 
-            if weekly_levels is None:
+            if levels is None:
 
-                progress_bar.progress(
-                    (i + 1) / total_tickers
+                progress.progress(
+                    (index + 1)
+                    / total
                 )
 
                 continue
 
+            previous_week_high = (
+                levels[
+                    "previous_week_high"
+                ]
+            )
 
-            previous_week_high = weekly_levels[
-                "previous_week_high"
-            ]
+            previous_week_low = (
+                levels[
+                    "previous_week_low"
+                ]
+            )
 
-            previous_week_low = weekly_levels[
-                "previous_week_low"
-            ]
+            current_week_high = (
+                levels[
+                    "current_week_high"
+                ]
+            )
 
-            current_week_high = weekly_levels[
-                "current_week_high"
-            ]
-
-            current_week_low = weekly_levels[
-                "current_week_low"
-            ]
-
+            current_week_low = (
+                levels[
+                    "current_week_low"
+                ]
+            )
 
             current_price = float(
                 df["Close"].iloc[-1]
             )
 
-
-            # =================================================
-            # HIGH / LOW TAKEN
-            # =================================================
+            # ------------------------------------------------
+            # SWEEP LOGIC
+            # ------------------------------------------------
 
             high_taken = (
                 current_week_high
@@ -577,133 +809,146 @@ def scan_market(tickers, data):
                 < previous_week_low
             )
 
-
-            # =================================================
+            # ------------------------------------------------
             # RECLAIM / REJECTION
-            # =================================================
+            # ------------------------------------------------
 
             low_reclaimed = (
                 low_taken
-                and current_price
+                and
+                current_price
                 > previous_week_low
             )
 
             high_rejected = (
                 high_taken
-                and current_price
+                and
+                current_price
                 < previous_week_high
             )
 
+            # ------------------------------------------------
+            # SWEEP DATE
+            # ------------------------------------------------
 
-            # =================================================
-            # DISTANCE FROM LEVEL
-            # =================================================
+            (
+                low_sweep_date,
+                high_sweep_date
+            ) = find_sweep_dates(
 
-            low_distance_pct = (
+                df,
+                previous_week_high,
+                previous_week_low
+            )
+
+            # ------------------------------------------------
+            # DAILY STRAT
+            # ------------------------------------------------
+
+            daily_strat = (
+                get_daily_strat(df)
+            )
+
+            # ------------------------------------------------
+            # FTFC
+            # ------------------------------------------------
+
+            ftfc = calculate_ftfc(
+                df,
+                levels
+            )
+
+            # ------------------------------------------------
+            # RVOL
+            # ------------------------------------------------
+
+            rvol = calculate_rvol(df)
+
+            # ------------------------------------------------
+            # DISTANCE
+            # ------------------------------------------------
+
+            pct_from_low = (
+
                 (
                     current_price
                     - previous_week_low
                 )
+
                 / previous_week_low
+
             ) * 100
 
+            pct_from_high = (
 
-            high_distance_pct = (
                 (
                     current_price
                     - previous_week_high
                 )
+
                 / previous_week_high
+
             ) * 100
 
-
-            # =================================================
-            # DAILY STRAT
-            # =================================================
-
-            daily_strat = get_daily_strat(df)
-
-            if daily_strat:
-
-                daily_pattern = daily_strat[
-                    "pattern"
-                ]
-
-            else:
-
-                daily_pattern = "N/A"
-
-
-            # =================================================
-            # FTFC
-            # =================================================
-
-            ftfc_data = calculate_ftfc(
-                df,
-                weekly_levels
-            )
-
-            weekly_ftfc = ftfc_data[
-                "weekly_ftfc"
-            ]
-
-            monthly_ftfc = ftfc_data[
-                "monthly_ftfc"
-            ]
-
-            ftfc = ftfc_data[
-                "ftfc"
-            ]
-
-
-            # =================================================
-            # RELATIVE VOLUME
-            # =================================================
-
-            rvol = calculate_relative_volume(df)
-
-            if rvol is not None:
-                rvol_display = round(rvol, 2)
-            else:
-                rvol_display = None
-
-
-            # =================================================
-            # BULLISH COMPOSITE SETUP
-            # =================================================
+            # ------------------------------------------------
+            # COMPOSITE BULLISH
+            # ------------------------------------------------
 
             bullish_setup = (
 
                 low_taken
-                and low_reclaimed
-                and daily_pattern == "2U Green"
-                and weekly_ftfc == "Up"
 
+                and low_reclaimed
+
+                and daily_strat
+                == "2U Green"
+
+                and ftfc["weekly"]
+                == "Up"
             )
 
-
-            # =================================================
-            # BEARISH COMPOSITE SETUP
-            # =================================================
+            # ------------------------------------------------
+            # COMPOSITE BEARISH
+            # ------------------------------------------------
 
             bearish_setup = (
 
                 high_taken
-                and high_rejected
-                and daily_pattern == "2D Red"
-                and weekly_ftfc == "Down"
 
+                and high_rejected
+
+                and daily_strat
+                == "2D Red"
+
+                and ftfc["weekly"]
+                == "Down"
             )
 
+            # ------------------------------------------------
+            # ONLY RETURN SWEEPS
+            # ------------------------------------------------
 
-            # =================================================
+            if not (
+                low_taken
+                or
+                high_taken
+            ):
+
+                progress.progress(
+                    (index + 1)
+                    / total
+                )
+
+                continue
+
+            # ------------------------------------------------
             # SIGNAL
-            # =================================================
+            # ------------------------------------------------
 
             if bullish_setup:
 
                 signal = (
-                    "Previous Week Low Taken → "
+                    "PWL Taken → "
                     "Reclaimed → "
                     "Daily 2U Green → "
                     "Weekly FTFC Up"
@@ -712,52 +957,49 @@ def scan_market(tickers, data):
             elif bearish_setup:
 
                 signal = (
-                    "Previous Week High Taken → "
+                    "PWH Taken → "
                     "Rejected → "
                     "Daily 2D Red → "
                     "Weekly FTFC Down"
                 )
 
+            elif (
+                low_taken
+                and
+                high_taken
+            ):
+
+                signal = (
+                    "Both Weekly Levels Taken"
+                )
+
             elif low_reclaimed:
 
                 signal = (
-                    "Previous Week Low "
-                    "Taken → Reclaimed"
+                    "PWL Taken → Reclaimed"
                 )
 
             elif high_rejected:
 
                 signal = (
-                    "Previous Week High "
-                    "Taken → Rejected"
+                    "PWH Taken → Rejected"
                 )
-
-            elif low_taken and high_taken:
-
-                signal = "Both Weekly Levels Taken"
 
             elif low_taken:
 
-                signal = "Previous Week Low Taken"
-
-            elif high_taken:
-
-                signal = "Previous Week High Taken"
+                signal = (
+                    "Previous Week Low Taken"
+                )
 
             else:
 
-                # We only want stocks that interacted
-                # with previous weekly levels
-                progress_bar.progress(
-                    (i + 1) / total_tickers
+                signal = (
+                    "Previous Week High Taken"
                 )
 
-                continue
-
-
-            # =================================================
-            # ADD RESULT
-            # =================================================
+            # ------------------------------------------------
+            # RESULT
+            # ------------------------------------------------
 
             results.append({
 
@@ -765,52 +1007,83 @@ def scan_market(tickers, data):
                     ticker,
 
                 "Price":
-                    round(current_price, 2),
-
-                "Prev Week High":
-                    round(previous_week_high, 2),
+                    round(
+                        current_price,
+                        2
+                    ),
 
                 "Prev Week Low":
-                    round(previous_week_low, 2),
+                    round(
+                        previous_week_low,
+                        2
+                    ),
 
-                "Current Week High":
-                    round(current_week_high, 2),
+                "Prev Week High":
+                    round(
+                        previous_week_high,
+                        2
+                    ),
 
                 "Current Week Low":
-                    round(current_week_low, 2),
+                    round(
+                        current_week_low,
+                        2
+                    ),
 
-                "High Taken":
-                    high_taken,
+                "Current Week High":
+                    round(
+                        current_week_high,
+                        2
+                    ),
 
                 "Low Taken":
                     low_taken,
 
-                "High Rejected":
-                    high_rejected,
+                "Low Sweep Date":
+                    low_sweep_date,
 
                 "Low Reclaimed":
                     low_reclaimed,
 
+                "High Taken":
+                    high_taken,
+
+                "High Sweep Date":
+                    high_sweep_date,
+
+                "High Rejected":
+                    high_rejected,
+
                 "Daily STRAT":
-                    daily_pattern,
+                    daily_strat,
 
                 "Weekly FTFC":
-                    weekly_ftfc,
+                    ftfc["weekly"],
 
                 "Monthly FTFC":
-                    monthly_ftfc,
+                    ftfc["monthly"],
 
                 "FTFC":
-                    ftfc,
+                    ftfc["alignment"],
 
                 "RVOL":
-                    rvol_display,
+                    (
+                        round(rvol, 2)
+                        if rvol is not None
+                        else None
+                    ),
 
-                "% From Prev Low":
-                    round(low_distance_pct, 2),
+                "% From PWL":
+                    round(
+                        pct_from_low,
+                        2
+                    ),
 
-                "% From Prev High":
-                    round(high_distance_pct, 2),
+                "% From PWH":
+                    round(
+                        pct_from_high,
+                        2
+                    ),
 
                 "Bullish Setup":
                     bullish_setup,
@@ -820,38 +1093,48 @@ def scan_market(tickers, data):
 
                 "Signal":
                     signal
-
             })
 
-
         except Exception:
-
             pass
 
-
-        progress_bar.progress(
-            (i + 1) / total_tickers
+        progress.progress(
+            (index + 1)
+            / total
         )
 
-
-    progress_bar.empty()
-
+    progress.empty()
     status.empty()
 
-    return pd.DataFrame(results)
+    return pd.DataFrame(
+        results
+    )
 
 
 # ============================================================
 # SIDEBAR
 # ============================================================
 
-st.sidebar.header("⚙️ Scanner Settings")
-
-all_tickers = get_tickers()
+st.sidebar.header(
+    "⚙️ Scanner Settings"
+)
 
 
 # ============================================================
-# UNIVERSE
+# LOAD S&P 500
+# ============================================================
+
+with st.spinner(
+    "Loading S&P 500 universe..."
+):
+
+    sp500_tickers = (
+        get_sp500_tickers()
+    )
+
+
+# ============================================================
+# MARKET UNIVERSE
 # ============================================================
 
 universe = st.sidebar.selectbox(
@@ -859,69 +1142,75 @@ universe = st.sidebar.selectbox(
     "Market Universe",
 
     [
-        "Default Universe",
+        "S&P 500",
         "Custom Watchlist"
     ]
-
 )
 
 
-if universe == "Custom Watchlist":
+if universe == "S&P 500":
 
-    custom_input = st.sidebar.text_area(
+    selected_tickers = (
+        sp500_tickers
+    )
 
-        "Enter tickers",
+else:
 
-        value="AAPL,MSFT,NVDA,AMD,TSLA",
+    custom_input = (
+        st.sidebar.text_area(
 
-        help=(
-            "Separate symbols using commas. "
-            "Example: AAPL, MSFT, NVDA"
+            "Enter tickers",
+
+            value=(
+                "AAPL,MSFT,NVDA,"
+                "AMD,TSLA,AMZN,META"
+            ),
+
+            help=(
+                "Separate symbols "
+                "with commas."
+            )
         )
-
     )
 
     selected_tickers = [
 
-        x.strip().upper()
+        ticker.strip().upper()
 
-        for x in custom_input.split(",")
+        for ticker
+        in custom_input.split(",")
 
-        if x.strip()
-
+        if ticker.strip()
     ]
-
-else:
-
-    selected_tickers = all_tickers
 
 
 # ============================================================
 # SIGNAL FILTER
 # ============================================================
 
-signal_filter = st.sidebar.selectbox(
+signal_filter = (
+    st.sidebar.selectbox(
 
-    "Signal",
+        "Weekly Signal",
 
-    [
-        "All Weekly Sweeps",
+        [
+            "All Sweeps",
 
-        "Previous Week Low Taken",
+            "Previous Week Low Taken",
 
-        "Previous Week High Taken",
+            "Previous Week High Taken",
 
-        "Low Taken + Reclaimed",
+            "Low Taken + Reclaimed",
 
-        "High Taken + Rejected",
+            "High Taken + Rejected",
 
-        "Bullish STRAT Setup",
+            "Both Weekly Levels Taken",
 
-        "Bearish STRAT Setup",
+            "Bullish STRAT Setup",
 
-        "Both Weekly Levels Taken"
-    ]
-
+            "Bearish STRAT Setup"
+        ]
+    )
 )
 
 
@@ -929,17 +1218,18 @@ signal_filter = st.sidebar.selectbox(
 # FTFC FILTER
 # ============================================================
 
-ftfc_filter = st.sidebar.selectbox(
+ftfc_filter = (
+    st.sidebar.selectbox(
 
-    "FTFC Filter",
+        "M/W FTFC",
 
-    [
-        "All",
-        "FTFC Up",
-        "FTFC Down",
-        "Mixed"
-    ]
-
+        [
+            "All",
+            "FTFC Up",
+            "FTFC Down",
+            "Mixed"
+        ]
+    )
 )
 
 
@@ -947,44 +1237,46 @@ ftfc_filter = st.sidebar.selectbox(
 # DAILY STRAT FILTER
 # ============================================================
 
-strat_filter = st.sidebar.selectbox(
+strat_filter = (
+    st.sidebar.selectbox(
 
-    "Daily STRAT",
+        "Daily STRAT",
 
-    [
-        "All",
-        "1 Inside",
-        "2U Green",
-        "2U Red",
-        "2D Green",
-        "2D Red",
-        "3 Outside"
-    ]
-
+        [
+            "All",
+            "1 Inside",
+            "2U Green",
+            "2U Red",
+            "2D Green",
+            "2D Red",
+            "3 Outside"
+        ]
+    )
 )
 
 
 # ============================================================
-# RVOL FILTER
+# MINIMUM RVOL
 # ============================================================
 
-minimum_rvol = st.sidebar.number_input(
+minimum_rvol = (
+    st.sidebar.number_input(
 
-    "Minimum RVOL",
+        "Minimum RVOL",
 
-    min_value=0.0,
+        min_value=0.0,
 
-    max_value=10.0,
+        max_value=10.0,
 
-    value=0.0,
+        value=0.0,
 
-    step=0.1
-
+        step=0.1
+    )
 )
 
 
 # ============================================================
-# DISPLAY UNIVERSE SIZE
+# UNIVERSE COUNT
 # ============================================================
 
 st.sidebar.metric(
@@ -994,18 +1286,21 @@ st.sidebar.metric(
 
 
 # ============================================================
-# RUN SCANNER
+# RUN BUTTON
 # ============================================================
 
 run_scan = st.sidebar.button(
-    "🚀 Run Scanner",
+
+    "🚀 Scan Market",
+
     type="primary",
+
     use_container_width=True
 )
 
 
 # ============================================================
-# MAIN APP
+# MAIN
 # ============================================================
 
 if run_scan:
@@ -1013,38 +1308,45 @@ if run_scan:
     if not selected_tickers:
 
         st.error(
-            "Please enter at least one ticker."
+            "No ticker symbols available."
         )
 
         st.stop()
 
-
     # ========================================================
-    # DOWNLOAD
+    # DOWNLOAD MARKET DATA
     # ========================================================
 
     with st.spinner(
-        f"Downloading data for "
-        f"{len(selected_tickers)} symbols..."
+
+        f"Downloading market data for "
+        f"{len(selected_tickers)} stocks..."
+
     ):
 
-        market_data = download_market_data(
-            selected_tickers
+        market_data = (
+            download_market_data(
+                selected_tickers
+            )
         )
 
-
-    if market_data.empty:
+    if not market_data:
 
         st.error(
-            "No market data was downloaded. "
-            "Try again in a few minutes."
+            "Yahoo Finance did not return "
+            "market data. Try again shortly."
         )
 
         st.stop()
 
+    st.caption(
+        f"Successfully downloaded "
+        f"{len(market_data)} / "
+        f"{len(selected_tickers)} symbols."
+    )
 
     # ========================================================
-    # SCAN
+    # RUN SCANNER
     # ========================================================
 
     results = scan_market(
@@ -1052,84 +1354,98 @@ if run_scan:
         market_data
     )
 
-
     # ========================================================
-    # FILTER RESULTS
+    # APPLY FILTERS
     # ========================================================
 
     if not results.empty:
 
-
-        if signal_filter == "Previous Week Low Taken":
+        if (
+            signal_filter
+            == "Previous Week Low Taken"
+        ):
 
             results = results[
-                results["Low Taken"] == True
+                results[
+                    "Low Taken"
+                ]
             ]
 
-
-        elif signal_filter == "Previous Week High Taken":
+        elif (
+            signal_filter
+            == "Previous Week High Taken"
+        ):
 
             results = results[
-                results["High Taken"] == True
+                results[
+                    "High Taken"
+                ]
             ]
 
-
-        elif signal_filter == "Low Taken + Reclaimed":
+        elif (
+            signal_filter
+            == "Low Taken + Reclaimed"
+        ):
 
             results = results[
-                results["Low Reclaimed"] == True
+                results[
+                    "Low Reclaimed"
+                ]
             ]
 
-
-        elif signal_filter == "High Taken + Rejected":
+        elif (
+            signal_filter
+            == "High Taken + Rejected"
+        ):
 
             results = results[
-                results["High Rejected"] == True
+                results[
+                    "High Rejected"
+                ]
             ]
 
-
-        elif signal_filter == "Bullish STRAT Setup":
-
-            results = results[
-                results["Bullish Setup"] == True
-            ]
-
-
-        elif signal_filter == "Bearish STRAT Setup":
+        elif (
+            signal_filter
+            == "Both Weekly Levels Taken"
+        ):
 
             results = results[
-                results["Bearish Setup"] == True
-            ]
-
-
-        elif signal_filter == "Both Weekly Levels Taken":
-
-            results = results[
-                (
-                    results["Low Taken"] == True
-                )
+                results["Low Taken"]
                 &
-                (
-                    results["High Taken"] == True
-                )
+                results["High Taken"]
             ]
 
+        elif (
+            signal_filter
+            == "Bullish STRAT Setup"
+        ):
 
-        # ====================================================
-        # FTFC FILTER
-        # ====================================================
+            results = results[
+                results[
+                    "Bullish Setup"
+                ]
+            ]
 
+        elif (
+            signal_filter
+            == "Bearish STRAT Setup"
+        ):
+
+            results = results[
+                results[
+                    "Bearish Setup"
+                ]
+            ]
+
+        # FTFC
         if ftfc_filter != "All":
 
             results = results[
-                results["FTFC"] == ftfc_filter
+                results["FTFC"]
+                == ftfc_filter
             ]
 
-
-        # ====================================================
-        # STRAT FILTER
-        # ====================================================
-
+        # STRAT
         if strat_filter != "All":
 
             results = results[
@@ -1137,15 +1453,12 @@ if run_scan:
                 == strat_filter
             ]
 
-
-        # ====================================================
-        # RVOL FILTER
-        # ====================================================
-
+        # RVOL
         if minimum_rvol > 0:
 
             results = results[
-                results["RVOL"].fillna(0)
+                results["RVOL"]
+                .fillna(0)
                 >= minimum_rvol
             ]
 
@@ -1159,7 +1472,8 @@ if run_scan:
     if results.empty:
 
         st.warning(
-            "No stocks matched the selected conditions."
+            "No stocks matched "
+            "your selected conditions."
         )
 
     else:
@@ -1168,17 +1482,17 @@ if run_scan:
         # METRICS
         # ====================================================
 
-        col1, col2, col3, col4 = st.columns(4)
+        c1, c2, c3, c4 = (
+            st.columns(4)
+        )
 
-
-        col1.metric(
-            "Matches",
+        c1.metric(
+            "Total Matches",
             len(results)
         )
 
-
-        col2.metric(
-            "Weekly Lows Taken",
+        c2.metric(
+            "PWL Taken",
             int(
                 results[
                     "Low Taken"
@@ -1186,9 +1500,8 @@ if run_scan:
             )
         )
 
-
-        col3.metric(
-            "Weekly Highs Taken",
+        c3.metric(
+            "PWH Taken",
             int(
                 results[
                     "High Taken"
@@ -1196,49 +1509,51 @@ if run_scan:
             )
         )
 
+        composite_count = int(
+            results[
+                "Bullish Setup"
+            ].sum()
+            +
+            results[
+                "Bearish Setup"
+            ].sum()
+        )
 
-        col4.metric(
-            "Composite Setups",
-            int(
-                results[
-                    "Bullish Setup"
-                ].sum()
-                +
-                results[
-                    "Bearish Setup"
-                ].sum()
+        c4.metric(
+            "STRAT Setups",
+            composite_count
+        )
+
+        # ====================================================
+        # SORT RESULTS
+        # ====================================================
+
+        results = (
+            results.sort_values(
+
+                by=[
+                    "Bullish Setup",
+                    "Bearish Setup",
+                    "RVOL"
+                ],
+
+                ascending=[
+                    False,
+                    False,
+                    False
+                ],
+
+                na_position="last"
             )
         )
 
-
         # ====================================================
-        # SORT
+        # MAIN RESULTS TABLE
         # ====================================================
 
-        results = results.sort_values(
-
-            by=[
-                "Bullish Setup",
-                "Bearish Setup",
-                "RVOL"
-            ],
-
-            ascending=[
-                False,
-                False,
-                False
-            ],
-
-            na_position="last"
+        st.subheader(
+            "🔎 Scanner Results"
         )
-
-
-        # ====================================================
-        # TABLE
-        # ====================================================
-
-        st.subheader("Scanner Results")
-
 
         display_columns = [
 
@@ -1256,9 +1571,13 @@ if run_scan:
 
             "Low Taken",
 
+            "Low Sweep Date",
+
             "Low Reclaimed",
 
             "High Taken",
+
+            "High Sweep Date",
 
             "High Rejected",
 
@@ -1272,18 +1591,18 @@ if run_scan:
 
             "RVOL",
 
-            "% From Prev Low",
+            "% From PWL",
 
-            "% From Prev High",
+            "% From PWH",
 
             "Signal"
-
         ]
-
 
         st.dataframe(
 
-            results[display_columns],
+            results[
+                display_columns
+            ],
 
             use_container_width=True,
 
@@ -1321,144 +1640,184 @@ if run_scan:
                         format="%.2fx"
                     ),
 
-                "% From Prev Low":
+                "% From PWL":
                     st.column_config.NumberColumn(
                         format="%.2f%%"
                     ),
 
-                "% From Prev High":
+                "% From PWH":
                     st.column_config.NumberColumn(
                         format="%.2f%%"
                     )
-
             }
-
         )
 
-
         # ====================================================
-        # COMPOSITE SETUPS
+        # BULLISH SETUPS
         # ====================================================
 
         bullish = results[
-            results["Bullish Setup"] == True
+            results[
+                "Bullish Setup"
+            ]
         ]
-
-
-        bearish = results[
-            results["Bearish Setup"] == True
-        ]
-
 
         if not bullish.empty:
 
             st.subheader(
-                "🟢 Bullish STRAT Setups"
+                "🟢 Bullish Setups"
             )
 
-            for _, row in bullish.iterrows():
+            st.dataframe(
 
-                st.success(
+                bullish[
+                    [
+                        "Ticker",
+                        "Price",
+                        "Prev Week Low",
+                        "Low Sweep Date",
+                        "Daily STRAT",
+                        "Weekly FTFC",
+                        "Monthly FTFC",
+                        "RVOL"
+                    ]
+                ],
 
-                    f"{row['Ticker']} — "
-                    f"Previous Week Low Taken → "
-                    f"Reclaimed → "
-                    f"Daily 2U Green → "
-                    f"Weekly FTFC Up"
-                )
+                use_container_width=True,
 
+                hide_index=True
+            )
+
+        # ====================================================
+        # BEARISH SETUPS
+        # ====================================================
+
+        bearish = results[
+            results[
+                "Bearish Setup"
+            ]
+        ]
 
         if not bearish.empty:
 
             st.subheader(
-                "🔴 Bearish STRAT Setups"
+                "🔴 Bearish Setups"
             )
 
-            for _, row in bearish.iterrows():
+            st.dataframe(
 
-                st.error(
+                bearish[
+                    [
+                        "Ticker",
+                        "Price",
+                        "Prev Week High",
+                        "High Sweep Date",
+                        "Daily STRAT",
+                        "Weekly FTFC",
+                        "Monthly FTFC",
+                        "RVOL"
+                    ]
+                ],
 
-                    f"{row['Ticker']} — "
-                    f"Previous Week High Taken → "
-                    f"Rejected → "
-                    f"Daily 2D Red → "
-                    f"Weekly FTFC Down"
-                )
+                use_container_width=True,
 
+                hide_index=True
+            )
 
         # ====================================================
-        # DOWNLOAD CSV
+        # CSV DOWNLOAD
         # ====================================================
 
-        csv = results.to_csv(
-            index=False
-        ).encode("utf-8")
-
+        csv = (
+            results
+            .to_csv(index=False)
+            .encode("utf-8")
+        )
 
         st.download_button(
 
-            label="⬇️ Download Results",
+            "⬇️ Download Scanner Results",
 
             data=csv,
 
             file_name=(
-                "weekly_strat_scanner_results.csv"
+                "sp500_weekly_sweep_scanner.csv"
             ),
 
             mime="text/csv",
 
             use_container_width=True
-
         )
 
 
 # ============================================================
-# INITIAL SCREEN
+# HOME SCREEN
 # ============================================================
 
 else:
 
-    st.info(
-        "Configure the scanner in the sidebar "
-        "and click **Run Scanner**."
-    )
+    if sp500_tickers:
+
+        st.success(
+            f"✓ Loaded "
+            f"{len(sp500_tickers)} "
+            f"S&P 500 symbols."
+        )
 
     st.markdown(
         """
-### Scanner Logic
+### Scanner
 
-**Bullish setup**
+The scanner looks through the **S&P 500** for stocks
+interacting with the previous completed week's range.
 
-`Previous Week Low Taken → Reclaimed → Daily 2U Green → Weekly FTFC Up`
-
-**Bearish setup**
-
-`Previous Week High Taken → Rejected → Daily 2D Red → Weekly FTFC Down`
-
-### Definitions
+#### 🟢 Bullish sequence
 
 **Previous Week Low Taken**
 
-Current week's low trades below the completed previous week's low.
+↓
 
-**Previous Week High Taken**
+**Previous Week Low Reclaimed**
 
-Current week's high trades above the completed previous week's high.
+↓
 
-**Low Reclaimed**
+**Daily 2U Green**
 
-The previous week's low was taken and price is now back above it.
-
-**High Rejected**
-
-The previous week's high was taken and price is now back below it.
+↓
 
 **Weekly FTFC Up**
 
-Current price is above the current week's open.
+
+#### 🔴 Bearish sequence
+
+**Previous Week High Taken**
+
+↓
+
+**Previous Week High Rejected**
+
+↓
+
+**Daily 2D Red**
+
+↓
 
 **Weekly FTFC Down**
 
-Current price is below the current week's open.
+
+### Weekly sweep definition
+
+A previous-week low is considered taken when:
+
+`Current Week Low < Previous Week Low`
+
+A previous-week high is considered taken when:
+
+`Current Week High > Previous Week High`
+
+The scanner remembers a sweep that occurred earlier in the
+current week. For example, if a stock takes the previous week's
+low on Monday and rallies above it by Friday, it will still be
+reported as having taken the weekly low.
 """
     )
