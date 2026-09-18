@@ -14,11 +14,11 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("📊 S&P 500 Weekly High / Low Scanner")
+st.title("📊 S&P 500 Weekly High / Low STRAT Scanner")
 
 st.caption(
     "Scans the S&P 500 for stocks that take out the previous "
-    "week's high or low."
+    "week's high or low and displays the previous weekly STRAT candle."
 )
 
 
@@ -41,8 +41,7 @@ def get_sp500_tickers():
 
         if "Symbol" not in df.columns:
             raise ValueError(
-                "The S&P 500 dataset does not contain "
-                "a Symbol column."
+                "S&P 500 dataset does not contain a Symbol column."
             )
 
         tickers = (
@@ -53,17 +52,16 @@ def get_sp500_tickers():
             .tolist()
         )
 
-        # Yahoo Finance format:
+        # Yahoo Finance ticker format
         # BRK.B -> BRK-B
-        # BF.B  -> BF-B
+        # BF.B -> BF-B
+
         tickers = [
             ticker.replace(".", "-")
             for ticker in tickers
         ]
 
-        tickers = sorted(set(tickers))
-
-        return tickers
+        return sorted(set(tickers))
 
     except Exception as e:
 
@@ -86,8 +84,6 @@ def download_market_data(tickers):
     if not tickers:
         return all_data
 
-    # Smaller batches are generally more reliable
-    # than requesting the entire S&P 500 at once.
     batch_size = 50
 
     for start in range(
@@ -116,9 +112,9 @@ def download_market_data(tickers):
             if data is None or data.empty:
                 continue
 
-            # ------------------------------------------------
-            # Multiple symbols
-            # ------------------------------------------------
+            # =================================================
+            # MULTIPLE TICKERS
+            # =================================================
 
             if len(batch) > 1:
 
@@ -147,14 +143,18 @@ def download_market_data(tickers):
                         )
 
                         if not ticker_df.empty:
-                            all_data[ticker] = ticker_df
+
+                            all_data[
+                                ticker
+                            ] = ticker_df
 
                     except Exception:
+
                         continue
 
-            # ------------------------------------------------
-            # Single symbol
-            # ------------------------------------------------
+            # =================================================
+            # SINGLE TICKER
+            # =================================================
 
             else:
 
@@ -173,12 +173,15 @@ def download_market_data(tickers):
                     )
 
                 if not ticker_df.empty:
-                    all_data[ticker] = ticker_df
+
+                    all_data[
+                        ticker
+                    ] = ticker_df
 
         except Exception:
+
             continue
 
-        # Small pause between Yahoo requests
         time.sleep(0.25)
 
     return all_data
@@ -188,16 +191,20 @@ def download_market_data(tickers):
 # CLEAN TICKER DATA
 # ============================================================
 
-def clean_ticker_dataframe(data, ticker):
+def clean_ticker_dataframe(
+    market_data,
+    ticker
+):
 
     try:
 
-        if ticker not in data:
+        if ticker not in market_data:
             return None
 
-        df = data[ticker].copy()
+        df = market_data[
+            ticker
+        ].copy()
 
-        # Flatten columns if necessary
         if isinstance(
             df.columns,
             pd.MultiIndex
@@ -220,11 +227,13 @@ def clean_ticker_dataframe(data, ticker):
             col in df.columns
             for col in required
         ):
+
             return None
 
-        df = df[required].copy()
+        df = df[
+            required
+        ].copy()
 
-        # Convert everything to numeric
         for col in required:
 
             df[col] = pd.to_numeric(
@@ -248,10 +257,14 @@ def clean_ticker_dataframe(data, ticker):
             df.index
         )
 
-        # Remove timezone if Yahoo returns one
         try:
-            df.index = df.index.tz_localize(None)
+
+            df.index = (
+                df.index.tz_localize(None)
+            )
+
         except Exception:
+
             pass
 
         df = df.sort_index()
@@ -264,154 +277,21 @@ def clean_ticker_dataframe(data, ticker):
 
 
 # ============================================================
-# WEEKLY LEVELS
+# GENERIC STRAT CLASSIFICATION
 # ============================================================
 
-def get_weekly_levels(df):
+def classify_strat_candle(
+    current_open,
+    current_high,
+    current_low,
+    current_close,
+    previous_high,
+    previous_low
+):
 
-    if df is None or len(df) < 10:
-        return None
-
-    temp = df.copy()
-
-    # W-FRI gives trading weeks ending Friday.
-    temp["Week"] = (
-        temp.index.to_period("W-FRI")
-    )
-
-    weekly = temp.groupby(
-        "Week"
-    ).agg(
-        Open=("Open", "first"),
-        High=("High", "max"),
-        Low=("Low", "min"),
-        Close=("Close", "last"),
-        Volume=("Volume", "sum")
-    )
-
-    if len(weekly) < 2:
-        return None
-
-    # Current trading week
-    current_week_period = (
-        temp["Week"].iloc[-1]
-    )
-
-    current_week_data = temp[
-        temp["Week"]
-        == current_week_period
-    ].copy()
-
-    # All weeks before current week
-    previous_weeks = weekly[
-        weekly.index
-        < current_week_period
-    ]
-
-    if previous_weeks.empty:
-        return None
-
-    # Most recent completed week
-    previous_week = (
-        previous_weeks.iloc[-1]
-    )
-
-    return {
-
-        "previous_week_high":
-            float(
-                previous_week["High"]
-            ),
-
-        "previous_week_low":
-            float(
-                previous_week["Low"]
-            ),
-
-        "previous_week_open":
-            float(
-                previous_week["Open"]
-            ),
-
-        "previous_week_close":
-            float(
-                previous_week["Close"]
-            ),
-
-        "current_week_open":
-            float(
-                current_week_data[
-                    "Open"
-                ].iloc[0]
-            ),
-
-        "current_week_high":
-            float(
-                current_week_data[
-                    "High"
-                ].max()
-            ),
-
-        "current_week_low":
-            float(
-                current_week_data[
-                    "Low"
-                ].min()
-            ),
-
-        "current_week_close":
-            float(
-                current_week_data[
-                    "Close"
-                ].iloc[-1]
-            ),
-
-        "current_week":
-            str(
-                current_week_period
-            )
-    }
-
-
-# ============================================================
-# DAILY STRAT PATTERN
-# ============================================================
-
-def get_daily_strat(df):
-
-    if df is None or len(df) < 2:
-        return "N/A"
-
-    previous = df.iloc[-2]
-    current = df.iloc[-1]
-
-    previous_high = float(
-        previous["High"]
-    )
-
-    previous_low = float(
-        previous["Low"]
-    )
-
-    current_open = float(
-        current["Open"]
-    )
-
-    current_high = float(
-        current["High"]
-    )
-
-    current_low = float(
-        current["Low"]
-    )
-
-    current_close = float(
-        current["Close"]
-    )
-
-    # --------------------------------------------------------
-    # Outside bar
-    # --------------------------------------------------------
+    # ========================================================
+    # 3 OUTSIDE
+    # ========================================================
 
     if (
         current_high > previous_high
@@ -421,9 +301,9 @@ def get_daily_strat(df):
 
         return "3 Outside"
 
-    # --------------------------------------------------------
-    # Inside bar
-    # --------------------------------------------------------
+    # ========================================================
+    # 1 INSIDE
+    # ========================================================
 
     if (
         current_high <= previous_high
@@ -433,29 +313,281 @@ def get_daily_strat(df):
 
         return "1 Inside"
 
-    # --------------------------------------------------------
-    # Directional up
-    # --------------------------------------------------------
+    # ========================================================
+    # 2 UP
+    # ========================================================
 
     if current_high > previous_high:
 
         if current_close >= current_open:
+
             return "2U Green"
 
         return "2U Red"
 
-    # --------------------------------------------------------
-    # Directional down
-    # --------------------------------------------------------
+    # ========================================================
+    # 2 DOWN
+    # ========================================================
 
     if current_low < previous_low:
 
         if current_close >= current_open:
+
             return "2D Green"
 
         return "2D Red"
 
     return "N/A"
+
+
+# ============================================================
+# WEEKLY LEVELS + PREVIOUS WEEK STRAT
+# ============================================================
+
+def get_weekly_levels(df):
+
+    if df is None or len(df) < 15:
+
+        return None
+
+    temp = df.copy()
+
+    temp["Week"] = (
+        temp.index.to_period(
+            "W-FRI"
+        )
+    )
+
+    weekly = temp.groupby(
+        "Week"
+    ).agg(
+
+        Open=("Open", "first"),
+
+        High=("High", "max"),
+
+        Low=("Low", "min"),
+
+        Close=("Close", "last"),
+
+        Volume=("Volume", "sum")
+    )
+
+    # Need:
+    #
+    # current week
+    # previous completed week
+    # week before previous week
+
+    if len(weekly) < 3:
+
+        return None
+
+    # ========================================================
+    # CURRENT WEEK
+    # ========================================================
+
+    current_week_period = (
+        temp["Week"].iloc[-1]
+    )
+
+    current_week_data = temp[
+        temp["Week"]
+        == current_week_period
+    ].copy()
+
+    # ========================================================
+    # COMPLETED WEEKS
+    # ========================================================
+
+    completed_weeks = weekly[
+        weekly.index
+        < current_week_period
+    ]
+
+    if len(completed_weeks) < 2:
+
+        return None
+
+    # Previous completed week
+
+    previous_week = (
+        completed_weeks.iloc[-1]
+    )
+
+    # Week before previous week
+
+    two_weeks_ago = (
+        completed_weeks.iloc[-2]
+    )
+
+    # ========================================================
+    # PREVIOUS WEEK VALUES
+    # ========================================================
+
+    previous_week_open = float(
+        previous_week["Open"]
+    )
+
+    previous_week_high = float(
+        previous_week["High"]
+    )
+
+    previous_week_low = float(
+        previous_week["Low"]
+    )
+
+    previous_week_close = float(
+        previous_week["Close"]
+    )
+
+    # ========================================================
+    # TWO WEEKS AGO
+    # ========================================================
+
+    two_weeks_ago_high = float(
+        two_weeks_ago["High"]
+    )
+
+    two_weeks_ago_low = float(
+        two_weeks_ago["Low"]
+    )
+
+    # ========================================================
+    # PREVIOUS WEEK STRAT
+    # ========================================================
+
+    previous_week_strat = (
+        classify_strat_candle(
+
+            previous_week_open,
+
+            previous_week_high,
+
+            previous_week_low,
+
+            previous_week_close,
+
+            two_weeks_ago_high,
+
+            two_weeks_ago_low
+        )
+    )
+
+    # ========================================================
+    # CURRENT WEEK VALUES
+    # ========================================================
+
+    current_week_open = float(
+        current_week_data[
+            "Open"
+        ].iloc[0]
+    )
+
+    current_week_high = float(
+        current_week_data[
+            "High"
+        ].max()
+    )
+
+    current_week_low = float(
+        current_week_data[
+            "Low"
+        ].min()
+    )
+
+    current_week_close = float(
+        current_week_data[
+            "Close"
+        ].iloc[-1]
+    )
+
+    # ========================================================
+    # RETURN
+    # ========================================================
+
+    return {
+
+        "previous_week_open":
+            previous_week_open,
+
+        "previous_week_high":
+            previous_week_high,
+
+        "previous_week_low":
+            previous_week_low,
+
+        "previous_week_close":
+            previous_week_close,
+
+        "previous_week_strat":
+            previous_week_strat,
+
+        "two_weeks_ago_high":
+            two_weeks_ago_high,
+
+        "two_weeks_ago_low":
+            two_weeks_ago_low,
+
+        "current_week_open":
+            current_week_open,
+
+        "current_week_high":
+            current_week_high,
+
+        "current_week_low":
+            current_week_low,
+
+        "current_week_close":
+            current_week_close,
+
+        "current_week":
+            str(
+                current_week_period
+            )
+    }
+
+
+# ============================================================
+# DAILY STRAT
+# ============================================================
+
+def get_daily_strat(df):
+
+    if df is None or len(df) < 2:
+
+        return "N/A"
+
+    previous = df.iloc[-2]
+
+    current = df.iloc[-1]
+
+    return classify_strat_candle(
+
+        float(
+            current["Open"]
+        ),
+
+        float(
+            current["High"]
+        ),
+
+        float(
+            current["Low"]
+        ),
+
+        float(
+            current["Close"]
+        ),
+
+        float(
+            previous["High"]
+        ),
+
+        float(
+            previous["Low"]
+        )
+    )
 
 
 # ============================================================
@@ -470,12 +602,14 @@ def calculate_ftfc(
     try:
 
         current_price = float(
-            df["Close"].iloc[-1]
+            df[
+                "Close"
+            ].iloc[-1]
         )
 
-        # ----------------------------------------------------
-        # WEEKLY
-        # ----------------------------------------------------
+        # ====================================================
+        # WEEKLY FTFC
+        # ====================================================
 
         weekly_open = (
             weekly_levels[
@@ -495,9 +629,9 @@ def calculate_ftfc(
 
             weekly_ftfc = "Neutral"
 
-        # ----------------------------------------------------
-        # MONTHLY
-        # ----------------------------------------------------
+        # ====================================================
+        # MONTHLY FTFC
+        # ====================================================
 
         current_month = (
             df.index[-1]
@@ -512,6 +646,7 @@ def calculate_ftfc(
         if month_data.empty:
 
             monthly_ftfc = "N/A"
+
             monthly_open = None
 
         else:
@@ -542,9 +677,9 @@ def calculate_ftfc(
                     "Neutral"
                 )
 
-        # ----------------------------------------------------
+        # ====================================================
         # M + W ALIGNMENT
-        # ----------------------------------------------------
+        # ====================================================
 
         if (
             weekly_ftfc == "Up"
@@ -552,7 +687,7 @@ def calculate_ftfc(
             monthly_ftfc == "Up"
         ):
 
-            ftfc = "FTFC Up"
+            alignment = "FTFC Up"
 
         elif (
             weekly_ftfc == "Down"
@@ -560,11 +695,11 @@ def calculate_ftfc(
             monthly_ftfc == "Down"
         ):
 
-            ftfc = "FTFC Down"
+            alignment = "FTFC Down"
 
         else:
 
-            ftfc = "Mixed"
+            alignment = "Mixed"
 
         return {
 
@@ -575,7 +710,7 @@ def calculate_ftfc(
                 monthly_ftfc,
 
             "alignment":
-                ftfc,
+                alignment,
 
             "weekly_open":
                 weekly_open,
@@ -588,11 +723,20 @@ def calculate_ftfc(
 
         return {
 
-            "weekly": "N/A",
-            "monthly": "N/A",
-            "alignment": "N/A",
-            "weekly_open": None,
-            "monthly_open": None
+            "weekly":
+                "N/A",
+
+            "monthly":
+                "N/A",
+
+            "alignment":
+                "N/A",
+
+            "weekly_open":
+                None,
+
+            "monthly_open":
+                None
         }
 
 
@@ -607,20 +751,31 @@ def calculate_rvol(
 
     try:
 
-        if len(df) < lookback + 1:
+        if len(df) < (
+            lookback + 1
+        ):
+
             return None
 
         current_volume = float(
-            df["Volume"].iloc[-1]
+            df[
+                "Volume"
+            ].iloc[-1]
         )
 
         average_volume = float(
+
             df["Volume"]
-            .iloc[-(lookback + 1):-1]
+
+            .iloc[
+                -(lookback + 1):-1
+            ]
+
             .mean()
         )
 
         if average_volume <= 0:
+
             return None
 
         return (
@@ -634,7 +789,7 @@ def calculate_rvol(
 
 
 # ============================================================
-# FIND EXACT SWEEP DATE
+# FIND SWEEP DATES
 # ============================================================
 
 def find_sweep_dates(
@@ -643,35 +798,38 @@ def find_sweep_dates(
     previous_week_low
 ):
 
-    temp = df.copy()
-
     current_period = (
-        temp.index[-1]
+        df.index[-1]
         .to_period("W-FRI")
     )
 
-    current_week = temp[
-        temp.index.to_period(
+    current_week = df[
+
+        df.index.to_period(
             "W-FRI"
         )
+
         == current_period
     ]
 
     high_sweep_date = None
-    low_sweep_date = None
 
-    # --------------------------------------------------------
-    # Find first day that took the level
-    # --------------------------------------------------------
+    low_sweep_date = None
 
     for date, row in (
         current_week.iterrows()
     ):
 
+        # ====================================================
+        # LOW SWEEP
+        # ====================================================
+
         if (
             low_sweep_date is None
             and
-            float(row["Low"])
+            float(
+                row["Low"]
+            )
             < previous_week_low
         ):
 
@@ -681,10 +839,16 @@ def find_sweep_dates(
                 )
             )
 
+        # ====================================================
+        # HIGH SWEEP
+        # ====================================================
+
         if (
             high_sweep_date is None
             and
-            float(row["High"])
+            float(
+                row["High"]
+            )
             > previous_week_high
         ):
 
@@ -722,19 +886,22 @@ def scan_market(
     ):
 
         status.text(
+
             f"Scanning {ticker} "
             f"({index + 1}/{total})"
         )
 
         try:
 
-            # ------------------------------------------------
-            # DATA
-            # ------------------------------------------------
+            # =================================================
+            # CLEAN DATA
+            # =================================================
 
-            df = clean_ticker_dataframe(
-                market_data,
-                ticker
+            df = (
+                clean_ticker_dataframe(
+                    market_data,
+                    ticker
+                )
             )
 
             if (
@@ -750,12 +917,14 @@ def scan_market(
 
                 continue
 
-            # ------------------------------------------------
-            # WEEKLY LEVELS
-            # ------------------------------------------------
+            # =================================================
+            # WEEKLY DATA
+            # =================================================
 
-            levels = get_weekly_levels(
-                df
+            levels = (
+                get_weekly_levels(
+                    df
+                )
             )
 
             if levels is None:
@@ -779,6 +948,12 @@ def scan_market(
                 ]
             )
 
+            previous_week_strat = (
+                levels[
+                    "previous_week_strat"
+                ]
+            )
+
             current_week_high = (
                 levels[
                     "current_week_high"
@@ -792,12 +967,14 @@ def scan_market(
             )
 
             current_price = float(
-                df["Close"].iloc[-1]
+                df[
+                    "Close"
+                ].iloc[-1]
             )
 
-            # ------------------------------------------------
-            # SWEEP LOGIC
-            # ------------------------------------------------
+            # =================================================
+            # WEEKLY SWEEP
+            # =================================================
 
             high_taken = (
                 current_week_high
@@ -809,27 +986,37 @@ def scan_market(
                 < previous_week_low
             )
 
-            # ------------------------------------------------
-            # RECLAIM / REJECTION
-            # ------------------------------------------------
+            # =================================================
+            # RECLAIM
+            # =================================================
 
             low_reclaimed = (
+
                 low_taken
+
                 and
+
                 current_price
                 > previous_week_low
             )
 
+            # =================================================
+            # REJECTION
+            # =================================================
+
             high_rejected = (
+
                 high_taken
+
                 and
+
                 current_price
                 < previous_week_high
             )
 
-            # ------------------------------------------------
-            # SWEEP DATE
-            # ------------------------------------------------
+            # =================================================
+            # SWEEP DATES
+            # =================================================
 
             (
                 low_sweep_date,
@@ -837,36 +1024,46 @@ def scan_market(
             ) = find_sweep_dates(
 
                 df,
+
                 previous_week_high,
+
                 previous_week_low
             )
 
-            # ------------------------------------------------
+            # =================================================
             # DAILY STRAT
-            # ------------------------------------------------
+            # =================================================
 
             daily_strat = (
-                get_daily_strat(df)
+                get_daily_strat(
+                    df
+                )
             )
 
-            # ------------------------------------------------
+            # =================================================
             # FTFC
-            # ------------------------------------------------
+            # =================================================
 
-            ftfc = calculate_ftfc(
-                df,
-                levels
+            ftfc = (
+                calculate_ftfc(
+                    df,
+                    levels
+                )
             )
 
-            # ------------------------------------------------
+            # =================================================
             # RVOL
-            # ------------------------------------------------
+            # =================================================
 
-            rvol = calculate_rvol(df)
+            rvol = (
+                calculate_rvol(
+                    df
+                )
+            )
 
-            # ------------------------------------------------
-            # DISTANCE
-            # ------------------------------------------------
+            # =================================================
+            # DISTANCE FROM LEVELS
+            # =================================================
 
             pct_from_low = (
 
@@ -890,43 +1087,55 @@ def scan_market(
 
             ) * 100
 
-            # ------------------------------------------------
-            # COMPOSITE BULLISH
-            # ------------------------------------------------
+            # =================================================
+            # BULLISH SETUP
+            # =================================================
 
             bullish_setup = (
 
                 low_taken
 
-                and low_reclaimed
+                and
 
-                and daily_strat
+                low_reclaimed
+
+                and
+
+                daily_strat
                 == "2U Green"
 
-                and ftfc["weekly"]
+                and
+
+                ftfc["weekly"]
                 == "Up"
             )
 
-            # ------------------------------------------------
-            # COMPOSITE BEARISH
-            # ------------------------------------------------
+            # =================================================
+            # BEARISH SETUP
+            # =================================================
 
             bearish_setup = (
 
                 high_taken
 
-                and high_rejected
+                and
 
-                and daily_strat
+                high_rejected
+
+                and
+
+                daily_strat
                 == "2D Red"
 
-                and ftfc["weekly"]
+                and
+
+                ftfc["weekly"]
                 == "Down"
             )
 
-            # ------------------------------------------------
-            # ONLY RETURN SWEEPS
-            # ------------------------------------------------
+            # =================================================
+            # ONLY KEEP STOCKS THAT SWEPT A WEEKLY LEVEL
+            # =================================================
 
             if not (
                 low_taken
@@ -941,13 +1150,14 @@ def scan_market(
 
                 continue
 
-            # ------------------------------------------------
+            # =================================================
             # SIGNAL
-            # ------------------------------------------------
+            # =================================================
 
             if bullish_setup:
 
                 signal = (
+
                     "PWL Taken → "
                     "Reclaimed → "
                     "Daily 2U Green → "
@@ -957,6 +1167,7 @@ def scan_market(
             elif bearish_setup:
 
                 signal = (
+
                     "PWH Taken → "
                     "Rejected → "
                     "Daily 2D Red → "
@@ -997,9 +1208,9 @@ def scan_market(
                     "Previous Week High Taken"
                 )
 
-            # ------------------------------------------------
-            # RESULT
-            # ------------------------------------------------
+            # =================================================
+            # RESULTS
+            # =================================================
 
             results.append({
 
@@ -1011,6 +1222,10 @@ def scan_market(
                         current_price,
                         2
                     ),
+
+                # =============================================
+                # PREVIOUS WEEK
+                # =============================================
 
                 "Prev Week Low":
                     round(
@@ -1024,6 +1239,14 @@ def scan_market(
                         2
                     ),
 
+                # NEW COLUMN
+                "Prev Week STRAT":
+                    previous_week_strat,
+
+                # =============================================
+                # CURRENT WEEK
+                # =============================================
+
                 "Current Week Low":
                     round(
                         current_week_low,
@@ -1035,6 +1258,10 @@ def scan_market(
                         current_week_high,
                         2
                     ),
+
+                # =============================================
+                # SWEEP
+                # =============================================
 
                 "Low Taken":
                     low_taken,
@@ -1054,8 +1281,16 @@ def scan_market(
                 "High Rejected":
                     high_rejected,
 
+                # =============================================
+                # STRAT
+                # =============================================
+
                 "Daily STRAT":
                     daily_strat,
+
+                # =============================================
+                # FTFC
+                # =============================================
 
                 "Weekly FTFC":
                     ftfc["weekly"],
@@ -1066,12 +1301,25 @@ def scan_market(
                 "FTFC":
                     ftfc["alignment"],
 
+                # =============================================
+                # VOLUME
+                # =============================================
+
                 "RVOL":
                     (
-                        round(rvol, 2)
+                        round(
+                            rvol,
+                            2
+                        )
+
                         if rvol is not None
+
                         else None
                     ),
+
+                # =============================================
+                # DISTANCE
+                # =============================================
 
                 "% From PWL":
                     round(
@@ -1085,6 +1333,10 @@ def scan_market(
                         2
                     ),
 
+                # =============================================
+                # SETUPS
+                # =============================================
+
                 "Bullish Setup":
                     bullish_setup,
 
@@ -1096,6 +1348,7 @@ def scan_market(
             })
 
         except Exception:
+
             pass
 
         progress.progress(
@@ -1104,6 +1357,7 @@ def scan_market(
         )
 
     progress.empty()
+
     status.empty()
 
     return pd.DataFrame(
@@ -1137,14 +1391,16 @@ with st.spinner(
 # MARKET UNIVERSE
 # ============================================================
 
-universe = st.sidebar.selectbox(
+universe = (
+    st.sidebar.selectbox(
 
-    "Market Universe",
+        "Market Universe",
 
-    [
-        "S&P 500",
-        "Custom Watchlist"
-    ]
+        [
+            "S&P 500",
+            "Custom Watchlist"
+        ]
+    )
 )
 
 
@@ -1167,7 +1423,7 @@ else:
             ),
 
             help=(
-                "Separate symbols "
+                "Separate ticker symbols "
                 "with commas."
             )
         )
@@ -1185,7 +1441,7 @@ else:
 
 
 # ============================================================
-# SIGNAL FILTER
+# WEEKLY SIGNAL FILTER
 # ============================================================
 
 signal_filter = (
@@ -1215,6 +1471,62 @@ signal_filter = (
 
 
 # ============================================================
+# PREVIOUS WEEK STRAT FILTER
+# ============================================================
+
+prev_week_strat_filter = (
+    st.sidebar.selectbox(
+
+        "Previous Week STRAT",
+
+        [
+            "All",
+
+            "1 Inside",
+
+            "2U Green",
+
+            "2U Red",
+
+            "2D Green",
+
+            "2D Red",
+
+            "3 Outside"
+        ]
+    )
+)
+
+
+# ============================================================
+# DAILY STRAT FILTER
+# ============================================================
+
+daily_strat_filter = (
+    st.sidebar.selectbox(
+
+        "Daily STRAT",
+
+        [
+            "All",
+
+            "1 Inside",
+
+            "2U Green",
+
+            "2U Red",
+
+            "2D Green",
+
+            "2D Red",
+
+            "3 Outside"
+        ]
+    )
+)
+
+
+# ============================================================
 # FTFC FILTER
 # ============================================================
 
@@ -1225,8 +1537,11 @@ ftfc_filter = (
 
         [
             "All",
+
             "FTFC Up",
+
             "FTFC Down",
+
             "Mixed"
         ]
     )
@@ -1234,29 +1549,7 @@ ftfc_filter = (
 
 
 # ============================================================
-# DAILY STRAT FILTER
-# ============================================================
-
-strat_filter = (
-    st.sidebar.selectbox(
-
-        "Daily STRAT",
-
-        [
-            "All",
-            "1 Inside",
-            "2U Green",
-            "2U Red",
-            "2D Green",
-            "2D Red",
-            "3 Outside"
-        ]
-    )
-)
-
-
-# ============================================================
-# MINIMUM RVOL
+# RVOL
 # ============================================================
 
 minimum_rvol = (
@@ -1276,7 +1569,7 @@ minimum_rvol = (
 
 
 # ============================================================
-# UNIVERSE COUNT
+# STOCK COUNT
 # ============================================================
 
 st.sidebar.metric(
@@ -1286,16 +1579,18 @@ st.sidebar.metric(
 
 
 # ============================================================
-# RUN BUTTON
+# RUN
 # ============================================================
 
-run_scan = st.sidebar.button(
+run_scan = (
+    st.sidebar.button(
 
-    "🚀 Scan Market",
+        "🚀 Scan S&P 500",
 
-    type="primary",
+        type="primary",
 
-    use_container_width=True
+        use_container_width=True
+    )
 )
 
 
@@ -1314,7 +1609,7 @@ if run_scan:
         st.stop()
 
     # ========================================================
-    # DOWNLOAD MARKET DATA
+    # DOWNLOAD
     # ========================================================
 
     with st.spinner(
@@ -1334,31 +1629,38 @@ if run_scan:
 
         st.error(
             "Yahoo Finance did not return "
-            "market data. Try again shortly."
+            "market data."
         )
 
         st.stop()
 
     st.caption(
-        f"Successfully downloaded "
+
+        f"Downloaded "
         f"{len(market_data)} / "
         f"{len(selected_tickers)} symbols."
     )
 
     # ========================================================
-    # RUN SCANNER
+    # SCAN
     # ========================================================
 
     results = scan_market(
+
         selected_tickers,
+
         market_data
     )
 
     # ========================================================
-    # APPLY FILTERS
+    # FILTER RESULTS
     # ========================================================
 
     if not results.empty:
+
+        # ----------------------------------------------------
+        # WEEKLY SIGNAL
+        # ----------------------------------------------------
 
         if (
             signal_filter
@@ -1410,9 +1712,16 @@ if run_scan:
         ):
 
             results = results[
-                results["Low Taken"]
+
+                results[
+                    "Low Taken"
+                ]
+
                 &
-                results["High Taken"]
+
+                results[
+                    "High Taken"
+                ]
             ]
 
         elif (
@@ -1437,34 +1746,75 @@ if run_scan:
                 ]
             ]
 
+        # ----------------------------------------------------
+        # PREVIOUS WEEK STRAT
+        # ----------------------------------------------------
+
+        if (
+            prev_week_strat_filter
+            != "All"
+        ):
+
+            results = results[
+
+                results[
+                    "Prev Week STRAT"
+                ]
+
+                == prev_week_strat_filter
+            ]
+
+        # ----------------------------------------------------
+        # DAILY STRAT
+        # ----------------------------------------------------
+
+        if (
+            daily_strat_filter
+            != "All"
+        ):
+
+            results = results[
+
+                results[
+                    "Daily STRAT"
+                ]
+
+                == daily_strat_filter
+            ]
+
+        # ----------------------------------------------------
         # FTFC
+        # ----------------------------------------------------
+
         if ftfc_filter != "All":
 
             results = results[
+
                 results["FTFC"]
+
                 == ftfc_filter
             ]
 
-        # STRAT
-        if strat_filter != "All":
-
-            results = results[
-                results["Daily STRAT"]
-                == strat_filter
-            ]
-
+        # ----------------------------------------------------
         # RVOL
+        # ----------------------------------------------------
+
         if minimum_rvol > 0:
 
             results = results[
-                results["RVOL"]
+
+                results[
+                    "RVOL"
+                ]
+
                 .fillna(0)
+
                 >= minimum_rvol
             ]
 
 
     # ========================================================
-    # RESULTS
+    # OUTPUT
     # ========================================================
 
     st.divider()
@@ -1473,7 +1823,7 @@ if run_scan:
 
         st.warning(
             "No stocks matched "
-            "your selected conditions."
+            "the selected conditions."
         )
 
     else:
@@ -1487,12 +1837,14 @@ if run_scan:
         )
 
         c1.metric(
-            "Total Matches",
+            "Matches",
             len(results)
         )
 
         c2.metric(
+
             "PWL Taken",
+
             int(
                 results[
                     "Low Taken"
@@ -1501,7 +1853,9 @@ if run_scan:
         )
 
         c3.metric(
+
             "PWH Taken",
+
             int(
                 results[
                     "High Taken"
@@ -1509,23 +1863,26 @@ if run_scan:
             )
         )
 
-        composite_count = int(
-            results[
-                "Bullish Setup"
-            ].sum()
-            +
-            results[
-                "Bearish Setup"
-            ].sum()
-        )
-
         c4.metric(
-            "STRAT Setups",
-            composite_count
+
+            "Composite Setups",
+
+            int(
+
+                results[
+                    "Bullish Setup"
+                ].sum()
+
+                +
+
+                results[
+                    "Bearish Setup"
+                ].sum()
+            )
         )
 
         # ====================================================
-        # SORT RESULTS
+        # SORT
         # ====================================================
 
         results = (
@@ -1548,7 +1905,7 @@ if run_scan:
         )
 
         # ====================================================
-        # MAIN RESULTS TABLE
+        # MAIN TABLE
         # ====================================================
 
         st.subheader(
@@ -1564,6 +1921,9 @@ if run_scan:
             "Prev Week Low",
 
             "Prev Week High",
+
+            # NEW
+            "Prev Week STRAT",
 
             "Current Week Low",
 
@@ -1665,7 +2025,7 @@ if run_scan:
         if not bullish.empty:
 
             st.subheader(
-                "🟢 Bullish Setups"
+                "🟢 Bullish STRAT Setups"
             )
 
             st.dataframe(
@@ -1675,6 +2035,7 @@ if run_scan:
                         "Ticker",
                         "Price",
                         "Prev Week Low",
+                        "Prev Week STRAT",
                         "Low Sweep Date",
                         "Daily STRAT",
                         "Weekly FTFC",
@@ -1701,7 +2062,7 @@ if run_scan:
         if not bearish.empty:
 
             st.subheader(
-                "🔴 Bearish Setups"
+                "🔴 Bearish STRAT Setups"
             )
 
             st.dataframe(
@@ -1711,6 +2072,7 @@ if run_scan:
                         "Ticker",
                         "Price",
                         "Prev Week High",
+                        "Prev Week STRAT",
                         "High Sweep Date",
                         "Daily STRAT",
                         "Weekly FTFC",
@@ -1725,23 +2087,27 @@ if run_scan:
             )
 
         # ====================================================
-        # CSV DOWNLOAD
+        # CSV
         # ====================================================
 
         csv = (
             results
-            .to_csv(index=False)
-            .encode("utf-8")
+            .to_csv(
+                index=False
+            )
+            .encode(
+                "utf-8"
+            )
         )
 
         st.download_button(
 
-            "⬇️ Download Scanner Results",
+            "⬇️ Download Results",
 
             data=csv,
 
             file_name=(
-                "sp500_weekly_sweep_scanner.csv"
+                "sp500_weekly_strat_scanner.csv"
             ),
 
             mime="text/csv",
@@ -1751,7 +2117,7 @@ if run_scan:
 
 
 # ============================================================
-# HOME SCREEN
+# HOME
 # ============================================================
 
 else:
@@ -1759,6 +2125,7 @@ else:
     if sp500_tickers:
 
         st.success(
+
             f"✓ Loaded "
             f"{len(sp500_tickers)} "
             f"S&P 500 symbols."
@@ -1766,58 +2133,31 @@ else:
 
     st.markdown(
         """
-### Scanner
+### Scanner Logic
 
-The scanner looks through the **S&P 500** for stocks
-interacting with the previous completed week's range.
+The scanner finds S&P 500 stocks that interact with
+the previous completed week's high or low.
 
-#### 🟢 Bullish sequence
+### Previous Week STRAT
 
-**Previous Week Low Taken**
+The **Prev Week STRAT** column compares the previous
+completed weekly candle against the weekly candle before it.
 
-↓
+Possible values:
 
-**Previous Week Low Reclaimed**
+- **1 Inside**
+- **2U Green**
+- **2U Red**
+- **2D Green**
+- **2D Red**
+- **3 Outside**
 
-↓
+### Bullish Setup
 
-**Daily 2U Green**
+**PWL Taken → Reclaimed → Daily 2U Green → Weekly FTFC Up**
 
-↓
+### Bearish Setup
 
-**Weekly FTFC Up**
-
-
-#### 🔴 Bearish sequence
-
-**Previous Week High Taken**
-
-↓
-
-**Previous Week High Rejected**
-
-↓
-
-**Daily 2D Red**
-
-↓
-
-**Weekly FTFC Down**
-
-
-### Weekly sweep definition
-
-A previous-week low is considered taken when:
-
-`Current Week Low < Previous Week Low`
-
-A previous-week high is considered taken when:
-
-`Current Week High > Previous Week High`
-
-The scanner remembers a sweep that occurred earlier in the
-current week. For example, if a stock takes the previous week's
-low on Monday and rallies above it by Friday, it will still be
-reported as having taken the weekly low.
+**PWH Taken → Rejected → Daily 2D Red → Weekly FTFC Down**
 """
     )
