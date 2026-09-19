@@ -2160,4 +2160,3 @@ weekly candle relative to the week before it:
 - 3 Outside
 """
     )
-    )
