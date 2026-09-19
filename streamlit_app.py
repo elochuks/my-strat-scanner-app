@@ -17,8 +17,9 @@ st.set_page_config(
 st.title("📊 S&P 500 Weekly High / Low STRAT Scanner")
 
 st.caption(
-    "Scans for previous-week high/low sweeps, reclaims/rejections, "
-    "STRAT candles, actionable daily candles, FTFC and relative volume."
+    "Scans for previous-week high/low sweeps, STRAT candles, "
+    "FTFC, relative volume, and the first actionable daily "
+    "candle after a weekly level is taken."
 )
 
 
@@ -51,6 +52,8 @@ def get_sp500_tickers():
             .tolist()
         )
 
+        # Yahoo Finance format:
+        # BRK.B -> BRK-B
         tickers = [
             ticker.replace(".", "-")
             for ticker in tickers
@@ -159,10 +162,7 @@ def download_market_data(tickers):
                             continue
 
                         if not ticker_df.empty:
-
-                            all_data[
-                                ticker
-                            ] = ticker_df
+                            all_data[ticker] = ticker_df
 
                     except Exception:
                         continue
@@ -174,7 +174,6 @@ def download_market_data(tickers):
             else:
 
                 ticker = batch[0]
-
                 ticker_df = data.copy()
 
                 if isinstance(
@@ -207,10 +206,7 @@ def download_market_data(tickers):
                         )
 
                 if not ticker_df.empty:
-
-                    all_data[
-                        ticker
-                    ] = ticker_df
+                    all_data[ticker] = ticker_df
 
         except Exception:
             continue
@@ -234,10 +230,7 @@ def clean_ticker_dataframe(
         if ticker not in market_data:
             return None
 
-        df = (
-            market_data[ticker]
-            .copy()
-        )
+        df = market_data[ticker].copy()
 
         if isinstance(
             df.columns,
@@ -265,9 +258,7 @@ def clean_ticker_dataframe(
         ):
             return None
 
-        df = df[
-            required
-        ].copy()
+        df = df[required].copy()
 
         for col in required:
 
@@ -293,10 +284,7 @@ def clean_ticker_dataframe(
         )
 
         try:
-            df.index = (
-                df.index
-                .tz_localize(None)
-            )
+            df.index = df.index.tz_localize(None)
 
         except Exception:
             pass
@@ -320,7 +308,10 @@ def classify_strat_candle(
     previous_low
 ):
 
-    # 3 Outside
+    # ========================================================
+    # 3 OUTSIDE
+    # ========================================================
+
     if (
         current_high > previous_high
         and
@@ -328,7 +319,10 @@ def classify_strat_candle(
     ):
         return "3 Outside"
 
-    # 1 Inside
+    # ========================================================
+    # 1 INSIDE
+    # ========================================================
+
     if (
         current_high <= previous_high
         and
@@ -336,7 +330,10 @@ def classify_strat_candle(
     ):
         return "1 Inside"
 
-    # 2 Up
+    # ========================================================
+    # 2 UP
+    # ========================================================
+
     if current_high > previous_high:
 
         if current_close >= current_open:
@@ -344,7 +341,10 @@ def classify_strat_candle(
 
         return "2U Red"
 
-    # 2 Down
+    # ========================================================
+    # 2 DOWN
+    # ========================================================
+
     if current_low < previous_low:
 
         if current_close >= current_open:
@@ -367,9 +367,7 @@ def get_weekly_levels(df):
     temp = df.copy()
 
     temp["Week"] = (
-        temp.index.to_period(
-            "W-FRI"
-        )
+        temp.index.to_period("W-FRI")
     )
 
     weekly = (
@@ -386,15 +384,22 @@ def get_weekly_levels(df):
     if len(weekly) < 3:
         return None
 
+    # ========================================================
+    # CURRENT WEEK
+    # ========================================================
+
     current_week_period = (
-        temp["Week"]
-        .iloc[-1]
+        temp["Week"].iloc[-1]
     )
 
     current_week_data = temp[
         temp["Week"]
         == current_week_period
     ].copy()
+
+    # ========================================================
+    # COMPLETED WEEKS
+    # ========================================================
 
     completed_weeks = weekly[
         weekly.index
@@ -412,7 +417,10 @@ def get_weekly_levels(df):
         completed_weeks.iloc[-2]
     )
 
-    # Previous week
+    # ========================================================
+    # PREVIOUS WEEK VALUES
+    # ========================================================
+
     previous_week_open = float(
         previous_week["Open"]
     )
@@ -429,7 +437,10 @@ def get_weekly_levels(df):
         previous_week["Close"]
     )
 
-    # Two weeks ago
+    # ========================================================
+    # TWO WEEKS AGO
+    # ========================================================
+
     two_weeks_ago_high = float(
         two_weeks_ago["High"]
     )
@@ -438,7 +449,12 @@ def get_weekly_levels(df):
         two_weeks_ago["Low"]
     )
 
-    # Previous week STRAT
+    # ========================================================
+    # PREVIOUS WEEK STRAT
+    #
+    # Previous completed week vs week before it
+    # ========================================================
+
     previous_week_strat = (
         classify_strat_candle(
             previous_week_open,
@@ -450,7 +466,10 @@ def get_weekly_levels(df):
         )
     )
 
-    # Current week
+    # ========================================================
+    # CURRENT WEEK VALUES
+    # ========================================================
+
     current_week_open = float(
         current_week_data[
             "Open"
@@ -475,7 +494,12 @@ def get_weekly_levels(df):
         ].iloc[-1]
     )
 
-    # Current developing weekly STRAT
+    # ========================================================
+    # CURRENT WEEK STRAT
+    #
+    # Current developing week vs previous completed week
+    # ========================================================
+
     current_week_strat = (
         classify_strat_candle(
             current_week_open,
@@ -503,6 +527,12 @@ def get_weekly_levels(df):
 
         "previous_week_strat":
             previous_week_strat,
+
+        "two_weeks_ago_high":
+            two_weeks_ago_high,
+
+        "two_weeks_ago_low":
+            two_weeks_ago_low,
 
         "current_week_open":
             current_week_open,
@@ -551,450 +581,114 @@ def get_daily_strat(df):
 # ============================================================
 
 def classify_actionable_candle(
-    current_row,
-    previous_row
+    current_open,
+    current_high,
+    current_low,
+    current_close,
+    previous_high,
+    previous_low
 ):
 
-    try:
+    """
+    Actionable daily signals:
 
-        candle_open = float(
-            current_row["Open"]
-        )
+    - Hammer
+    - Shooter
+    - Inside Bar
+    """
 
-        candle_high = float(
-            current_row["High"]
-        )
-
-        candle_low = float(
-            current_row["Low"]
-        )
-
-        candle_close = float(
-            current_row["Close"]
-        )
-
-        previous_high = float(
-            previous_row["High"]
-        )
-
-        previous_low = float(
-            previous_row["Low"]
-        )
-
-        # ====================================================
-        # INSIDE BAR
-        # ====================================================
-
-        if (
-            candle_high <= previous_high
-            and
-            candle_low >= previous_low
-        ):
-
-            return "Inside Bar"
-
-        # ====================================================
-        # CANDLE MEASUREMENTS
-        # ====================================================
-
-        candle_range = (
-            candle_high
-            - candle_low
-        )
-
-        if candle_range <= 0:
-            return None
-
-        body = abs(
-            candle_close
-            - candle_open
-        )
-
-        # Protect against doji / tiny body
-        effective_body = max(
-            body,
-            candle_range * 0.05
-        )
-
-        upper_wick = (
-            candle_high
-            - max(
-                candle_open,
-                candle_close
-            )
-        )
-
-        lower_wick = (
-            min(
-                candle_open,
-                candle_close
-            )
-            - candle_low
-        )
-
-        # ====================================================
-        # HAMMER
-        #
-        # Lower wick >= 2x body
-        # Upper wick <= body
-        # Lower wick > upper wick
-        # ====================================================
-
-        hammer = (
-            lower_wick
-            >= effective_body * 2
-            and
-            upper_wick
-            <= effective_body
-            and
-            lower_wick
-            > upper_wick
-        )
-
-        if hammer:
-            return "Hammer"
-
-        # ====================================================
-        # SHOOTER / SHOOTING STAR
-        #
-        # Upper wick >= 2x body
-        # Lower wick <= body
-        # Upper wick > lower wick
-        # ====================================================
-
-        shooter = (
-            upper_wick
-            >= effective_body * 2
-            and
-            lower_wick
-            <= effective_body
-            and
-            upper_wick
-            > lower_wick
-        )
-
-        if shooter:
-            return "Shooter"
-
-        return None
-
-    except Exception:
-        return None
-
-
-# ============================================================
-# FIND SWEEP DATES
-# ============================================================
-
-def find_sweep_dates(
-    df,
-    previous_week_high,
-    previous_week_low
-):
-
-    current_period = (
-        df.index[-1]
-        .to_period("W-FRI")
+    candle_range = (
+        current_high
+        - current_low
     )
 
-    current_week = df[
-        df.index.to_period("W-FRI")
-        == current_period
-    ]
+    if candle_range <= 0:
+        return None
 
-    high_sweep_date = None
-    low_sweep_date = None
-
-    for date, row in (
-        current_week.iterrows()
-    ):
-
-        if (
-            low_sweep_date is None
-            and
-            float(row["Low"])
-            < previous_week_low
-        ):
-
-            low_sweep_date = (
-                date.strftime(
-                    "%Y-%m-%d"
-                )
-            )
-
-        if (
-            high_sweep_date is None
-            and
-            float(row["High"])
-            > previous_week_high
-        ):
-
-            high_sweep_date = (
-                date.strftime(
-                    "%Y-%m-%d"
-                )
-            )
-
-    return (
-        low_sweep_date,
-        high_sweep_date
+    body = abs(
+        current_close
+        - current_open
     )
 
-
-# ============================================================
-# FIRST ACTIONABLE SIGNAL
-#
-# Logic:
-#
-# Bullish:
-# PWL Taken
-# -> PWL Reclaimed
-# -> First Hammer / Shooter / Inside Bar
-#
-# Bearish:
-# PWH Taken
-# -> PWH Rejected
-# -> First Hammer / Shooter / Inside Bar
-#
-# The actionable candle CAN be the same candle that confirms
-# the reclaim/rejection.
-# ============================================================
-
-def find_first_actionable_signal(
-    df,
-    previous_week_high,
-    previous_week_low
-):
-
-    empty_result = {
-        "signal": None,
-        "date": None,
-        "direction": None,
-        "trigger": None
-    }
-
-    try:
-
-        current_period = (
-            df.index[-1]
-            .to_period("W-FRI")
+    upper_wick = (
+        current_high
+        - max(
+            current_open,
+            current_close
         )
+    )
 
-        current_week = df[
-            df.index.to_period("W-FRI")
-            == current_period
-        ].copy()
-
-        if current_week.empty:
-            return empty_result
-
-        # State tracking
-        low_taken = False
-        low_reclaimed = False
-
-        high_taken = False
-        high_rejected = False
-
-        candidates = []
-
-        # ====================================================
-        # WALK CURRENT WEEK IN CHRONOLOGICAL ORDER
-        # ====================================================
-
-        for i in range(
-            len(current_week)
-        ):
-
-            date = (
-                current_week.index[i]
-            )
-
-            row = (
-                current_week.iloc[i]
-            )
-
-            day_high = float(
-                row["High"]
-            )
-
-            day_low = float(
-                row["Low"]
-            )
-
-            day_close = float(
-                row["Close"]
-            )
-
-            # =================================================
-            # PWL TAKEN
-            # =================================================
-
-            if (
-                not low_taken
-                and
-                day_low < previous_week_low
-            ):
-
-                low_taken = True
-
-            # =================================================
-            # PWL RECLAIMED
-            #
-            # A daily close back above PWL
-            # =================================================
-
-            if (
-                low_taken
-                and
-                not low_reclaimed
-                and
-                day_close > previous_week_low
-            ):
-
-                low_reclaimed = True
-
-            # =================================================
-            # PWH TAKEN
-            # =================================================
-
-            if (
-                not high_taken
-                and
-                day_high > previous_week_high
-            ):
-
-                high_taken = True
-
-            # =================================================
-            # PWH REJECTED
-            #
-            # A daily close back below PWH
-            # =================================================
-
-            if (
-                high_taken
-                and
-                not high_rejected
-                and
-                day_close < previous_week_high
-            ):
-
-                high_rejected = True
-
-            # =================================================
-            # GET PREVIOUS DAILY CANDLE
-            # =================================================
-
-            full_location = (
-                df.index.get_loc(
-                    date
-                )
-            )
-
-            if isinstance(
-                full_location,
-                slice
-            ):
-                continue
-
-            if full_location == 0:
-                continue
-
-            previous_row = (
-                df.iloc[
-                    full_location - 1
-                ]
-            )
-
-            # =================================================
-            # CHECK ACTIONABLE CANDLE
-            # =================================================
-
-            candle_signal = (
-                classify_actionable_candle(
-                    row,
-                    previous_row
-                )
-            )
-
-            if candle_signal is None:
-                continue
-
-            # =================================================
-            # BULLISH ACTIONABLE
-            # =================================================
-
-            if (
-                low_taken
-                and
-                low_reclaimed
-            ):
-
-                candidates.append({
-                    "date": date,
-                    "signal": candle_signal,
-                    "direction": "Bullish",
-                    "trigger":
-                        "PWL Taken → Reclaimed"
-                })
-
-            # =================================================
-            # BEARISH ACTIONABLE
-            # =================================================
-
-            if (
-                high_taken
-                and
-                high_rejected
-            ):
-
-                candidates.append({
-                    "date": date,
-                    "signal": candle_signal,
-                    "direction": "Bearish",
-                    "trigger":
-                        "PWH Taken → Rejected"
-                })
-
-        if not candidates:
-            return empty_result
-
-        # Earliest valid signal
-        candidates.sort(
-            key=lambda x: x["date"]
+    lower_wick = (
+        min(
+            current_open,
+            current_close
         )
+        - current_low
+    )
 
-        first_signal = (
-            candidates[0]
-        )
+    # Prevent near-zero bodies from
+    # distorting wick/body calculations.
+    effective_body = max(
+        body,
+        candle_range * 0.05
+    )
 
-        return {
+    # ========================================================
+    # INSIDE BAR
+    # ========================================================
 
-            "signal":
-                first_signal[
-                    "signal"
-                ],
+    inside_bar = (
+        current_high <= previous_high
+        and
+        current_low >= previous_low
+    )
 
-            "date":
-                first_signal[
-                    "date"
-                ].strftime(
-                    "%Y-%m-%d"
-                ),
+    if inside_bar:
+        return "Inside Bar"
 
-            "direction":
-                first_signal[
-                    "direction"
-                ],
+    # ========================================================
+    # HAMMER
+    #
+    # Long lower wick
+    # Relatively small upper wick
+    # ========================================================
 
-            "trigger":
-                first_signal[
-                    "trigger"
-                ]
-        }
+    hammer = (
+        lower_wick
+        >= (2 * effective_body)
+        and
+        upper_wick
+        <= effective_body
+        and
+        lower_wick
+        >= (candle_range * 0.50)
+    )
 
-    except Exception:
-        return empty_result
+    if hammer:
+        return "Hammer"
+
+    # ========================================================
+    # SHOOTER / SHOOTING STAR
+    #
+    # Long upper wick
+    # Relatively small lower wick
+    # ========================================================
+
+    shooter = (
+        upper_wick
+        >= (2 * effective_body)
+        and
+        lower_wick
+        <= effective_body
+        and
+        upper_wick
+        >= (candle_range * 0.50)
+    )
+
+    if shooter:
+        return "Shooter"
+
+    return None
 
 
 # ============================================================
@@ -1009,11 +703,13 @@ def calculate_ftfc(
     try:
 
         current_price = float(
-            df["Close"]
-            .iloc[-1]
+            df["Close"].iloc[-1]
         )
 
-        # Weekly
+        # ====================================================
+        # WEEKLY
+        # ====================================================
+
         weekly_open = (
             weekly_levels[
                 "current_week_open"
@@ -1032,7 +728,10 @@ def calculate_ftfc(
 
             weekly_ftfc = "Neutral"
 
-        # Monthly
+        # ====================================================
+        # MONTHLY
+        # ====================================================
+
         current_month = (
             df.index[-1]
             .to_period("M")
@@ -1068,7 +767,10 @@ def calculate_ftfc(
 
                 monthly_ftfc = "Neutral"
 
-        # M/W alignment
+        # ====================================================
+        # MONTHLY + WEEKLY ALIGNMENT
+        # ====================================================
+
         if (
             weekly_ftfc == "Up"
             and
@@ -1112,15 +814,19 @@ def calculate_ftfc(
         return {
 
             "weekly": "N/A",
+
             "monthly": "N/A",
+
             "alignment": "N/A",
+
             "weekly_open": None,
+
             "monthly_open": None
         }
 
 
 # ============================================================
-# RVOL
+# RELATIVE VOLUME
 # ============================================================
 
 def calculate_rvol(
@@ -1157,7 +863,246 @@ def calculate_rvol(
         )
 
     except Exception:
+
         return None
+
+
+# ============================================================
+# FIND WEEKLY SWEEP DATES
+# ============================================================
+
+def find_sweep_dates(
+    df,
+    previous_week_high,
+    previous_week_low
+):
+
+    current_period = (
+        df.index[-1]
+        .to_period("W-FRI")
+    )
+
+    current_week = df[
+        df.index.to_period("W-FRI")
+        == current_period
+    ]
+
+    high_sweep_date = None
+    low_sweep_date = None
+
+    for date, row in (
+        current_week.iterrows()
+    ):
+
+        # ====================================================
+        # PWL TAKEN
+        # ====================================================
+
+        if (
+            low_sweep_date is None
+            and
+            float(row["Low"])
+            < previous_week_low
+        ):
+
+            low_sweep_date = (
+                date.strftime(
+                    "%Y-%m-%d"
+                )
+            )
+
+        # ====================================================
+        # PWH TAKEN
+        # ====================================================
+
+        if (
+            high_sweep_date is None
+            and
+            float(row["High"])
+            > previous_week_high
+        ):
+
+            high_sweep_date = (
+                date.strftime(
+                    "%Y-%m-%d"
+                )
+            )
+
+    return (
+        low_sweep_date,
+        high_sweep_date
+    )
+
+
+# ============================================================
+# FIRST ACTIONABLE SIGNAL AFTER WEEKLY SWEEP
+# ============================================================
+
+def find_first_actionable_signal(
+    df,
+    low_sweep_date,
+    high_sweep_date
+):
+
+    """
+    Searches for the FIRST actionable DAILY candle
+    after a previous-week level has been taken.
+
+    Reclaim/rejection is NOT required.
+
+    Actionable signals:
+
+    - Hammer
+    - Shooter
+    - Inside Bar
+
+    The sweep candle itself can qualify because the
+    level was taken intraday before the daily candle closed.
+    """
+
+    if (
+        low_sweep_date is None
+        and
+        high_sweep_date is None
+    ):
+
+        return None, None, None
+
+    # ========================================================
+    # CONVERT DATES
+    # ========================================================
+
+    low_date = (
+        pd.Timestamp(
+            low_sweep_date
+        )
+        if low_sweep_date
+        else None
+    )
+
+    high_date = (
+        pd.Timestamp(
+            high_sweep_date
+        )
+        if high_sweep_date
+        else None
+    )
+
+    sweep_dates = [
+        date
+        for date in [
+            low_date,
+            high_date
+        ]
+        if date is not None
+    ]
+
+    if not sweep_dates:
+
+        return None, None, None
+
+    # Start searching from earliest sweep
+    first_sweep_date = min(
+        sweep_dates
+    )
+
+    # ========================================================
+    # SEARCH DAILY CANDLES
+    # ========================================================
+
+    for i in range(
+        1,
+        len(df)
+    ):
+
+        current_date = (
+            df.index[i]
+        )
+
+        if (
+            current_date
+            < first_sweep_date
+        ):
+            continue
+
+        previous = (
+            df.iloc[i - 1]
+        )
+
+        current = (
+            df.iloc[i]
+        )
+
+        actionable_signal = (
+            classify_actionable_candle(
+                float(current["Open"]),
+                float(current["High"]),
+                float(current["Low"]),
+                float(current["Close"]),
+                float(previous["High"]),
+                float(previous["Low"])
+            )
+        )
+
+        if actionable_signal is None:
+            continue
+
+        # ====================================================
+        # WHICH WEEKLY LEVEL(S) HAD BEEN TAKEN
+        # BEFORE/ON THIS SIGNAL DATE?
+        # ====================================================
+
+        low_active = (
+            low_date is not None
+            and
+            current_date >= low_date
+        )
+
+        high_active = (
+            high_date is not None
+            and
+            current_date >= high_date
+        )
+
+        if (
+            low_active
+            and
+            high_active
+        ):
+
+            context = (
+                "PWL + PWH Taken"
+            )
+
+        elif low_active:
+
+            context = (
+                "PWL Taken"
+            )
+
+        elif high_active:
+
+            context = (
+                "PWH Taken"
+            )
+
+        else:
+
+            continue
+
+        return (
+            actionable_signal,
+            current_date.strftime(
+                "%Y-%m-%d"
+            ),
+            context
+        )
+
+    return (
+        None,
+        None,
+        None
+    )
 
 
 # ============================================================
@@ -1174,7 +1119,6 @@ def scan_market(
     total = len(tickers)
 
     progress = st.progress(0)
-
     status = st.empty()
 
     # ========================================================
@@ -1182,10 +1126,15 @@ def scan_market(
     # ========================================================
 
     bullish_daily_patterns = [
+
         "2U Green",
+
         "2D Green",
+
         "2U Red",
+
         "1 Inside",
+
         "3 Outside"
     ]
 
@@ -1194,10 +1143,15 @@ def scan_market(
     # ========================================================
 
     bearish_daily_patterns = [
+
         "2D Red",
+
         "2U Red",
+
         "2D Green",
+
         "1 Inside",
+
         "3 Outside"
     ]
 
@@ -1211,6 +1165,10 @@ def scan_market(
         )
 
         try:
+
+            # =================================================
+            # CLEAN DATA
+            # =================================================
 
             df = (
                 clean_ticker_dataframe(
@@ -1269,6 +1227,12 @@ def scan_market(
                 ]
             )
 
+            current_week_strat = (
+                levels[
+                    "current_week_strat"
+                ]
+            )
+
             current_week_high = (
                 levels[
                     "current_week_high"
@@ -1281,19 +1245,13 @@ def scan_market(
                 ]
             )
 
-            current_week_strat = (
-                levels[
-                    "current_week_strat"
-                ]
-            )
-
             current_price = float(
                 df["Close"]
                 .iloc[-1]
             )
 
             # =================================================
-            # WEEKLY SWEEPS
+            # WEEKLY LEVEL TAKEN
             # =================================================
 
             high_taken = (
@@ -1307,7 +1265,7 @@ def scan_market(
             )
 
             # =================================================
-            # CURRENT RECLAIM / REJECTION STATUS
+            # RECLAIM / REJECTION
             # =================================================
 
             low_reclaimed = (
@@ -1339,38 +1297,20 @@ def scan_market(
 
             # =================================================
             # FIRST ACTIONABLE DAILY SIGNAL
+            #
+            # Starts looking only after PWL/PWH is taken.
+            #
+            # Reclaim/rejection is NOT required.
             # =================================================
 
-            actionable = (
-                find_first_actionable_signal(
-                    df,
-                    previous_week_high,
-                    previous_week_low
-                )
-            )
-
-            first_actionable_signal = (
-                actionable[
-                    "signal"
-                ]
-            )
-
-            actionable_signal_date = (
-                actionable[
-                    "date"
-                ]
-            )
-
-            actionable_direction = (
-                actionable[
-                    "direction"
-                ]
-            )
-
-            actionable_trigger = (
-                actionable[
-                    "trigger"
-                ]
+            (
+                first_actionable_signal,
+                actionable_signal_date,
+                actionable_after
+            ) = find_first_actionable_signal(
+                df,
+                low_sweep_date,
+                high_sweep_date
             )
 
             # =================================================
@@ -1405,7 +1345,7 @@ def scan_market(
             )
 
             # =================================================
-            # DISTANCE FROM WEEKLY LEVELS
+            # DISTANCE FROM LEVELS
             # =================================================
 
             pct_from_low = (
@@ -1456,7 +1396,10 @@ def scan_market(
                 == "Down"
             )
 
-            # Only return stocks that swept a weekly level
+            # =================================================
+            # ONLY RETURN WEEKLY SWEEPS
+            # =================================================
+
             if not (
                 low_taken
                 or
@@ -1527,7 +1470,7 @@ def scan_market(
                 )
 
             # =================================================
-            # RESULT
+            # RESULTS
             # =================================================
 
             results.append({
@@ -1580,7 +1523,7 @@ def scan_market(
                     current_week_strat,
 
                 # =============================================
-                # PWL
+                # LOW SWEEP
                 # =============================================
 
                 "Low Taken":
@@ -1593,7 +1536,7 @@ def scan_market(
                     low_reclaimed,
 
                 # =============================================
-                # PWH
+                # HIGH SWEEP
                 # =============================================
 
                 "High Taken":
@@ -1613,7 +1556,7 @@ def scan_market(
                     daily_strat,
 
                 # =============================================
-                # ACTIONABLE DAILY SIGNAL
+                # FIRST ACTIONABLE SIGNAL
                 # =============================================
 
                 "First Actionable Signal":
@@ -1622,11 +1565,8 @@ def scan_market(
                 "Actionable Signal Date":
                     actionable_signal_date,
 
-                "Actionable Direction":
-                    actionable_direction,
-
-                "Actionable Trigger":
-                    actionable_trigger,
+                "Actionable After":
+                    actionable_after,
 
                 # =============================================
                 # FTFC
@@ -1642,7 +1582,7 @@ def scan_market(
                     ftfc["alignment"],
 
                 # =============================================
-                # RVOL
+                # VOLUME
                 # =============================================
 
                 "RVOL":
@@ -1736,6 +1676,7 @@ universe = (
         ]
     )
 )
+
 
 if universe == "S&P 500":
 
@@ -1857,26 +1798,28 @@ actionable_filter = (
         "First Actionable Signal",
         [
             "All",
+            "Has Actionable Signal",
+            "No Actionable Signal",
             "Hammer",
             "Shooter",
-            "Inside Bar",
-            "No Signal"
+            "Inside Bar"
         ]
     )
 )
 
 
 # ============================================================
-# ACTIONABLE DIRECTION FILTER
+# ACTIONABLE CONTEXT FILTER
 # ============================================================
 
-actionable_direction_filter = (
+actionable_after_filter = (
     st.sidebar.selectbox(
-        "Actionable Direction",
+        "Actionable After",
         [
             "All",
-            "Bullish",
-            "Bearish"
+            "PWL Taken",
+            "PWH Taken",
+            "PWL + PWH Taken"
         ]
     )
 )
@@ -1990,12 +1933,15 @@ if run_scan:
     )
 
     # ========================================================
-    # FILTERS
+    # APPLY FILTERS
     # ========================================================
 
     if not results.empty:
 
-        # Weekly signal
+        # ====================================================
+        # SIGNAL FILTER
+        # ====================================================
+
         if (
             signal_filter
             == "Previous Week Low Taken"
@@ -2061,41 +2007,73 @@ if run_scan:
                 results["Bearish Setup"]
             ]
 
-        # Previous week STRAT
+        # ====================================================
+        # PREVIOUS WEEK STRAT
+        # ====================================================
+
         if (
             prev_week_strat_filter
             != "All"
         ):
 
             results = results[
-                results["Prev Week STRAT"]
+                results[
+                    "Prev Week STRAT"
+                ]
                 == prev_week_strat_filter
             ]
 
-        # Current week STRAT
+        # ====================================================
+        # CURRENT WEEK STRAT
+        # ====================================================
+
         if (
             current_week_strat_filter
             != "All"
         ):
 
             results = results[
-                results["Current Week STRAT"]
+                results[
+                    "Current Week STRAT"
+                ]
                 == current_week_strat_filter
             ]
 
-        # Daily STRAT
+        # ====================================================
+        # DAILY STRAT
+        # ====================================================
+
         if (
             daily_strat_filter
             != "All"
         ):
 
             results = results[
-                results["Daily STRAT"]
+                results[
+                    "Daily STRAT"
+                ]
                 == daily_strat_filter
             ]
 
-        # Actionable signal
-        if actionable_filter == "No Signal":
+        # ====================================================
+        # ACTIONABLE SIGNAL
+        # ====================================================
+
+        if (
+            actionable_filter
+            == "Has Actionable Signal"
+        ):
+
+            results = results[
+                results[
+                    "First Actionable Signal"
+                ].notna()
+            ]
+
+        elif (
+            actionable_filter
+            == "No Actionable Signal"
+        ):
 
             results = results[
                 results[
@@ -2103,7 +2081,11 @@ if run_scan:
                 ].isna()
             ]
 
-        elif actionable_filter != "All":
+        elif actionable_filter in [
+            "Hammer",
+            "Shooter",
+            "Inside Bar"
+        ]:
 
             results = results[
                 results[
@@ -2112,20 +2094,26 @@ if run_scan:
                 == actionable_filter
             ]
 
-        # Actionable direction
+        # ====================================================
+        # ACTIONABLE AFTER FILTER
+        # ====================================================
+
         if (
-            actionable_direction_filter
+            actionable_after_filter
             != "All"
         ):
 
             results = results[
                 results[
-                    "Actionable Direction"
+                    "Actionable After"
                 ]
-                == actionable_direction_filter
+                == actionable_after_filter
             ]
 
+        # ====================================================
         # FTFC
+        # ====================================================
+
         if ftfc_filter != "All":
 
             results = results[
@@ -2133,7 +2121,10 @@ if run_scan:
                 == ftfc_filter
             ]
 
+        # ====================================================
         # RVOL
+        # ====================================================
+
         if minimum_rvol > 0:
 
             results = results[
@@ -2141,7 +2132,6 @@ if run_scan:
                 .fillna(0)
                 >= minimum_rvol
             ]
-
 
     # ========================================================
     # OUTPUT
@@ -2202,11 +2192,13 @@ if run_scan:
         )
 
         c5.metric(
-            "Actionable",
+            "Actionable Signals",
             int(
                 results[
                     "First Actionable Signal"
-                ].notna().sum()
+                ]
+                .notna()
+                .sum()
             )
         )
 
@@ -2233,7 +2225,7 @@ if run_scan:
         )
 
         # ====================================================
-        # MAIN TABLE
+        # MAIN RESULTS
         # ====================================================
 
         st.subheader(
@@ -2272,14 +2264,19 @@ if run_scan:
 
             "Daily STRAT",
 
+            # ================================================
             # ACTIONABLE SIGNAL
+            # ================================================
+
             "First Actionable Signal",
 
             "Actionable Signal Date",
 
-            "Actionable Direction",
+            "Actionable After",
 
-            "Actionable Trigger",
+            # ================================================
+            # FTFC / VOLUME
+            # ================================================
 
             "Weekly FTFC",
 
@@ -2350,30 +2347,36 @@ if run_scan:
         # ACTIONABLE SIGNALS TABLE
         # ====================================================
 
-        actionable_results = results[
+        actionable = results[
             results[
                 "First Actionable Signal"
             ].notna()
         ]
 
-        if not actionable_results.empty:
+        if not actionable.empty:
 
             st.subheader(
-                "🎯 First Actionable Daily Signals"
+                "⚡ First Actionable Signals"
+            )
+
+            st.caption(
+                "First Hammer, Shooter, or Inside Bar identified "
+                "on or after PWL/PWH was taken. "
+                "Reclaim/rejection is not required."
             )
 
             st.dataframe(
-                actionable_results[
+                actionable[
                     [
                         "Ticker",
                         "Price",
-                        "Actionable Direction",
-                        "Actionable Trigger",
+                        "Low Sweep Date",
+                        "High Sweep Date",
                         "First Actionable Signal",
                         "Actionable Signal Date",
-                        "Prev Week STRAT",
-                        "Current Week STRAT",
+                        "Actionable After",
                         "Daily STRAT",
+                        "Current Week STRAT",
                         "Weekly FTFC",
                         "RVOL"
                     ]
@@ -2395,7 +2398,14 @@ if run_scan:
         if not bullish.empty:
 
             st.subheader(
-                "🟢 Bullish Setups"
+                "🟢 Bullish STRAT Setups"
+            )
+
+            st.caption(
+                "PWL Taken → Reclaimed → "
+                "Daily 2U Green / 2D Green / "
+                "2U Red / 1 Inside / 3 Outside → "
+                "Weekly FTFC Up"
             )
 
             st.dataframe(
@@ -2407,7 +2417,6 @@ if run_scan:
                         "Prev Week STRAT",
                         "Current Week STRAT",
                         "Low Sweep Date",
-                        "Low Reclaimed",
                         "Daily STRAT",
                         "First Actionable Signal",
                         "Actionable Signal Date",
@@ -2434,7 +2443,14 @@ if run_scan:
         if not bearish.empty:
 
             st.subheader(
-                "🔴 Bearish Setups"
+                "🔴 Bearish STRAT Setups"
+            )
+
+            st.caption(
+                "PWH Taken → Rejected → "
+                "Daily 2D Red / 2U Red / "
+                "2D Green / 1 Inside / 3 Outside → "
+                "Weekly FTFC Down"
             )
 
             st.dataframe(
@@ -2446,7 +2462,6 @@ if run_scan:
                         "Prev Week STRAT",
                         "Current Week STRAT",
                         "High Sweep Date",
-                        "High Rejected",
                         "Daily STRAT",
                         "First Actionable Signal",
                         "Actionable Signal Date",
@@ -2461,7 +2476,7 @@ if run_scan:
             )
 
         # ====================================================
-        # DOWNLOAD
+        # CSV DOWNLOAD
         # ====================================================
 
         csv = (
@@ -2469,9 +2484,7 @@ if run_scan:
             .to_csv(
                 index=False
             )
-            .encode(
-                "utf-8"
-            )
+            .encode("utf-8")
         )
 
         st.download_button(
@@ -2486,7 +2499,7 @@ if run_scan:
 
 
 # ============================================================
-# HOME
+# HOME PAGE
 # ============================================================
 
 else:
@@ -2501,7 +2514,32 @@ else:
 
     st.markdown(
         """
-### 🟢 Bullish Setup
+### ⚡ Actionable Signal Logic
+
+After the **Previous Week Low (PWL)** or **Previous Week High (PWH)**
+is taken, the scanner begins looking for the first actionable
+daily candle.
+
+A reclaim or rejection is **not required**.
+
+The actionable candles are:
+
+- **Hammer**
+- **Shooter**
+- **Inside Bar**
+
+The scanner records:
+
+- **First Actionable Signal**
+- **Actionable Signal Date**
+- **Actionable After** — PWL Taken, PWH Taken, or both
+
+The sweep candle itself can qualify as the first actionable signal
+because the weekly level can be taken intraday before the daily
+candle closes.
+
+
+### 🟢 Bullish STRAT Setup
 
 **PWL Taken → Reclaimed → Daily STRAT → Weekly FTFC Up**
 
@@ -2514,7 +2552,7 @@ Accepted Daily STRAT:
 - 3 Outside
 
 
-### 🔴 Bearish Setup
+### 🔴 Bearish STRAT Setup
 
 **PWH Taken → Rejected → Daily STRAT → Weekly FTFC Down**
 
@@ -2527,46 +2565,14 @@ Accepted Daily STRAT:
 - 3 Outside
 
 
-### 🎯 Actionable Daily Signals
+### 📊 Weekly STRAT
 
-The scanner searches chronologically for the first:
+The scanner calculates:
 
-- **Hammer**
-- **Shooter**
-- **Inside Bar**
-
-after the required weekly-level sequence.
-
-**Bullish:**
-
-PWL Taken → Reclaimed → First Actionable Daily Candle
-
-**Bearish:**
-
-PWH Taken → Rejected → First Actionable Daily Candle
-
-The reclaim/rejection candle itself can qualify as the first
-actionable signal.
-
-
-### Weekly STRAT
-
-**Prev Week STRAT**
-
-Previous completed weekly candle compared with the week before it.
+**Previous Week STRAT**
+- Previous completed week compared with the week before it.
 
 **Current Week STRAT**
-
-Current developing weekly candle compared with the previous
-completed week.
-
-Classifications:
-
-- 1 Inside
-- 2U Green
-- 2U Red
-- 2D Green
-- 2D Red
-- 3 Outside
+- Current developing week compared with the previous completed week.
 """
     )
