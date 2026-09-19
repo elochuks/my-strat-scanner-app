@@ -9,16 +9,17 @@ import time
 # ============================================================
 
 st.set_page_config(
-    page_title="S&P 500 Weekly Sweep Scanner",
+    page_title="S&P 500 + Nasdaq-100 STRAT Scanner",
     page_icon="📊",
     layout="wide"
 )
 
-st.title("📊 S&P 500 Weekly High / Low STRAT Scanner")
+st.title("📊 S&P 500 + Nasdaq-100 Weekly STRAT Scanner")
 
 st.caption(
-    "Scans for previous-week high/low sweeps, reclaims/rejections, "
-    "STRAT candles, actionable daily candles, FTFC and relative volume."
+    "Scans S&P 500 and Nasdaq-100 stocks for previous-week "
+    "high/low sweeps, reclaims/rejections, STRAT candles, "
+    "actionable daily signals, FTFC and relative volume."
 )
 
 
@@ -40,16 +41,20 @@ def get_sp500_tickers():
         df = pd.read_csv(url)
 
         if "Symbol" not in df.columns:
-            raise ValueError("Dataset does not contain Symbol column.")
+            raise ValueError(
+                "S&P 500 dataset does not contain Symbol column."
+            )
 
         tickers = (
             df["Symbol"]
             .dropna()
             .astype(str)
             .str.strip()
+            .str.upper()
             .tolist()
         )
 
+        # Yahoo Finance formatting
         tickers = [
             ticker.replace(".", "-")
             for ticker in tickers
@@ -67,6 +72,60 @@ def get_sp500_tickers():
 
 
 # ============================================================
+# NASDAQ-100 UNIVERSE
+# ============================================================
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_nasdaq100_tickers():
+
+    try:
+
+        tables = pd.read_html(
+            "https://en.wikipedia.org/wiki/Nasdaq-100"
+        )
+
+        nasdaq_table = None
+
+        for table in tables:
+
+            if "Ticker" in table.columns:
+
+                nasdaq_table = table
+                break
+
+        if nasdaq_table is None:
+
+            raise ValueError(
+                "Could not locate Nasdaq-100 constituent table."
+            )
+
+        tickers = (
+            nasdaq_table["Ticker"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .str.upper()
+            .tolist()
+        )
+
+        # Yahoo Finance formatting
+        tickers = [
+            ticker.replace(".", "-")
+            for ticker in tickers
+        ]
+
+        return sorted(set(tickers))
+
+    except Exception as e:
+
+        st.error(
+            f"Unable to load Nasdaq-100 tickers: {e}"
+        )
+
+        return []
+
+
+# ============================================================
 # DOWNLOAD MARKET DATA
 # ============================================================
 
@@ -77,6 +136,11 @@ def download_market_data(tickers):
 
     if not tickers:
         return all_data
+
+    # Ensure duplicates can never reach Yahoo
+    tickers = sorted(
+        set(tickers)
+    )
 
     batch_size = 50
 
@@ -223,7 +287,7 @@ def download_market_data(tickers):
 
 
 # ============================================================
-# CLEAN DATA
+# CLEAN TICKER DATA
 # ============================================================
 
 def clean_ticker_dataframe(
@@ -236,7 +300,10 @@ def clean_ticker_dataframe(
         if ticker not in market_data:
             return None
 
-        df = market_data[ticker].copy()
+        df = (
+            market_data[ticker]
+            .copy()
+        )
 
         if isinstance(
             df.columns,
@@ -262,6 +329,7 @@ def clean_ticker_dataframe(
             col in df.columns
             for col in required
         ):
+
             return None
 
         df = df[
@@ -322,23 +390,34 @@ def classify_strat_candle(
     previous_low
 ):
 
+    # ========================================================
     # 3 OUTSIDE
+    # ========================================================
+
     if (
         current_high > previous_high
         and
         current_low < previous_low
     ):
+
         return "3 Outside"
 
+    # ========================================================
     # 1 INSIDE
+    # ========================================================
+
     if (
         current_high <= previous_high
         and
         current_low >= previous_low
     ):
+
         return "1 Inside"
 
+    # ========================================================
     # 2 UP
+    # ========================================================
+
     if current_high > previous_high:
 
         if current_close >= current_open:
@@ -346,7 +425,10 @@ def classify_strat_candle(
 
         return "2U Red"
 
+    # ========================================================
     # 2 DOWN
+    # ========================================================
+
     if current_low < previous_low:
 
         if current_close >= current_open:
@@ -358,7 +440,7 @@ def classify_strat_candle(
 
 
 # ============================================================
-# WEEKLY DATA
+# WEEKLY LEVELS + WEEKLY STRAT
 # ============================================================
 
 def get_weekly_levels(df):
@@ -388,6 +470,10 @@ def get_weekly_levels(df):
     if len(weekly) < 3:
         return None
 
+    # ========================================================
+    # CURRENT WEEK
+    # ========================================================
+
     current_week_period = (
         temp["Week"]
         .iloc[-1]
@@ -397,6 +483,10 @@ def get_weekly_levels(df):
         temp["Week"]
         == current_week_period
     ].copy()
+
+    # ========================================================
+    # COMPLETED WEEKS
+    # ========================================================
 
     completed_weeks = weekly[
         weekly.index
@@ -414,7 +504,10 @@ def get_weekly_levels(df):
         completed_weeks.iloc[-2]
     )
 
-    # Previous week
+    # ========================================================
+    # PREVIOUS WEEK
+    # ========================================================
+
     previous_week_open = float(
         previous_week["Open"]
     )
@@ -431,7 +524,10 @@ def get_weekly_levels(df):
         previous_week["Close"]
     )
 
-    # Two weeks ago
+    # ========================================================
+    # TWO WEEKS AGO
+    # ========================================================
+
     two_weeks_ago_high = float(
         two_weeks_ago["High"]
     )
@@ -440,7 +536,10 @@ def get_weekly_levels(df):
         two_weeks_ago["Low"]
     )
 
-    # Previous Week STRAT
+    # ========================================================
+    # PREVIOUS WEEK STRAT
+    # ========================================================
+
     previous_week_strat = (
         classify_strat_candle(
             previous_week_open,
@@ -452,7 +551,10 @@ def get_weekly_levels(df):
         )
     )
 
-    # Current week
+    # ========================================================
+    # CURRENT WEEK
+    # ========================================================
+
     current_week_open = float(
         current_week_data[
             "Open"
@@ -477,7 +579,10 @@ def get_weekly_levels(df):
         ].iloc[-1]
     )
 
-    # Current Week STRAT
+    # ========================================================
+    # CURRENT WEEK STRAT
+    # ========================================================
+
     current_week_strat = (
         classify_strat_candle(
             current_week_open,
@@ -549,11 +654,11 @@ def get_daily_strat(df):
 
 
 # ============================================================
-# ACTIONABLE CANDLE
+# ACTIONABLE DAILY CANDLE
 #
-# Hammer
-# Shooting Star
-# Inside Bar
+# HAMMER
+# SHOOTING STAR
+# INSIDE BAR
 # ============================================================
 
 def classify_actionable_candle(
@@ -603,22 +708,16 @@ def classify_actionable_candle(
     # INSIDE BAR
     # ========================================================
 
-    inside_bar = (
+    if (
         current_high <= previous_high
         and
         current_low >= previous_low
-    )
-
-    if inside_bar:
+    ):
 
         return "Inside Bar"
 
     # ========================================================
     # HAMMER
-    #
-    # Long lower wick
-    # Small upper wick
-    # Small real body
     # ========================================================
 
     hammer = (
@@ -638,10 +737,6 @@ def classify_actionable_candle(
 
     # ========================================================
     # SHOOTING STAR
-    #
-    # Long upper wick
-    # Small lower wick
-    # Small real body
     # ========================================================
 
     shooting_star = (
@@ -664,15 +759,6 @@ def classify_actionable_candle(
 
 # ============================================================
 # ACTIONABLE SIGNAL HISTORY
-#
-# CATEGORY 2:
-# PWL/PWH taken but not yet reclaimed/rejected
-#
-# CATEGORY 1:
-# PWL taken + reclaimed
-# PWH taken + rejected
-#
-# We retain BOTH first signals independently.
 # ============================================================
 
 def find_actionable_signals(
@@ -739,7 +825,7 @@ def find_actionable_signals(
     post_event = None
 
     # ========================================================
-    # WALK CURRENT WEEK CHRONOLOGICALLY
+    # WALK THROUGH CURRENT WEEK
     # ========================================================
 
     for current_date, current_row in (
@@ -763,7 +849,7 @@ def find_actionable_signals(
         )
 
         # ====================================================
-        # LEVEL TAKEN
+        # PWL TAKEN
         # ====================================================
 
         if (
@@ -779,6 +865,10 @@ def find_actionable_signals(
                 current_date
             )
 
+        # ====================================================
+        # PWH TAKEN
+        # ====================================================
+
         if (
             not high_taken
             and
@@ -793,9 +883,7 @@ def find_actionable_signals(
             )
 
         # ====================================================
-        # RECLAIM / REJECTION
-        #
-        # Determined using daily close.
+        # PWL RECLAIM
         # ====================================================
 
         if (
@@ -813,6 +901,10 @@ def find_actionable_signals(
                 current_date
             )
 
+        # ====================================================
+        # PWH REJECTION
+        # ====================================================
+
         if (
             high_taken
             and
@@ -829,7 +921,7 @@ def find_actionable_signals(
             )
 
         # ====================================================
-        # PREVIOUS DAILY CANDLE
+        # GET PREVIOUS DAILY CANDLE
         # ====================================================
 
         location = (
@@ -866,12 +958,9 @@ def find_actionable_signals(
             continue
 
         # ====================================================
-        # CATEGORY 1
-        #
         # POST-CONFIRMATION
         #
-        # Once reclaim/rejection has occurred, this candle
-        # can become the first confirmed actionable signal.
+        # CATEGORY 1
         # ====================================================
 
         if post_signal is None:
@@ -933,11 +1022,9 @@ def find_actionable_signals(
                 )
 
         # ====================================================
-        # CATEGORY 2
-        #
         # PRE-CONFIRMATION
         #
-        # Level was taken but NOT yet reclaimed/rejected.
+        # CATEGORY 2
         # ====================================================
 
         if pre_signal is None:
@@ -1094,6 +1181,10 @@ def calculate_ftfc(
             .iloc[-1]
         )
 
+        # ====================================================
+        # WEEKLY
+        # ====================================================
+
         weekly_open = (
             weekly_levels[
                 "current_week_open"
@@ -1198,19 +1289,15 @@ def calculate_ftfc(
         return {
 
             "weekly": "N/A",
-
             "monthly": "N/A",
-
             "alignment": "N/A",
-
             "weekly_open": None,
-
             "monthly_open": None
         }
 
 
 # ============================================================
-# RVOL
+# RELATIVE VOLUME
 # ============================================================
 
 def calculate_rvol(
@@ -1223,6 +1310,7 @@ def calculate_rvol(
         if len(df) < (
             lookback + 1
         ):
+
             return None
 
         current_volume = float(
@@ -1239,6 +1327,7 @@ def calculate_rvol(
         )
 
         if average_volume <= 0:
+
             return None
 
         return (
@@ -1262,6 +1351,11 @@ def scan_market(
 
     results = []
 
+    # Extra duplicate protection
+    tickers = sorted(
+        set(tickers)
+    )
+
     total = len(tickers)
 
     progress = st.progress(0)
@@ -1269,7 +1363,7 @@ def scan_market(
     status = st.empty()
 
     # ========================================================
-    # BULLISH DAILY STRAT PATTERNS
+    # BULLISH DAILY STRAT
     # ========================================================
 
     bullish_daily_patterns = [
@@ -1282,7 +1376,7 @@ def scan_market(
     ]
 
     # ========================================================
-    # BEARISH DAILY STRAT PATTERNS
+    # BEARISH DAILY STRAT
     # ========================================================
 
     bearish_daily_patterns = [
@@ -1309,9 +1403,11 @@ def scan_market(
             # DATA
             # =================================================
 
-            df = clean_ticker_dataframe(
-                market_data,
-                ticker
+            df = (
+                clean_ticker_dataframe(
+                    market_data,
+                    ticker
+                )
             )
 
             if (
@@ -1327,8 +1423,10 @@ def scan_market(
 
                 continue
 
-            levels = get_weekly_levels(
-                df
+            levels = (
+                get_weekly_levels(
+                    df
+                )
             )
 
             if levels is None:
@@ -1400,7 +1498,7 @@ def scan_market(
             )
 
             # =================================================
-            # CURRENT STATUS
+            # CURRENT RECLAIM / REJECTION
             # =================================================
 
             low_reclaimed = (
@@ -1443,17 +1541,21 @@ def scan_market(
             # FTFC
             # =================================================
 
-            ftfc = calculate_ftfc(
-                df,
-                levels
+            ftfc = (
+                calculate_ftfc(
+                    df,
+                    levels
+                )
             )
 
             # =================================================
             # RVOL
             # =================================================
 
-            rvol = calculate_rvol(
-                df
+            rvol = (
+                calculate_rvol(
+                    df
+                )
             )
 
             # =================================================
@@ -1478,6 +1580,17 @@ def scan_market(
 
             # =================================================
             # BULLISH SETUP
+            #
+            # PWL TAKEN
+            # + RECLAIMED
+            # +
+            # 2U GREEN
+            # 2D GREEN
+            # 2U RED
+            # 1 INSIDE
+            # 3 OUTSIDE
+            # +
+            # WEEKLY FTFC UP
             # =================================================
 
             bullish_setup = (
@@ -1494,6 +1607,17 @@ def scan_market(
 
             # =================================================
             # BEARISH SETUP
+            #
+            # PWH TAKEN
+            # + REJECTED
+            # +
+            # 2D RED
+            # 2U RED
+            # 2D GREEN
+            # 1 INSIDE
+            # 3 OUTSIDE
+            # +
+            # WEEKLY FTFC DOWN
             # =================================================
 
             bearish_setup = (
@@ -1509,7 +1633,7 @@ def scan_market(
             )
 
             # =================================================
-            # ONLY WEEKLY SWEEPS
+            # ONLY SHOW WEEKLY SWEEPS
             # =================================================
 
             if not (
@@ -1580,7 +1704,7 @@ def scan_market(
                 )
 
             # =================================================
-            # RESULTS
+            # RESULT
             # =================================================
 
             results.append({
@@ -1674,8 +1798,7 @@ def scan_market(
 
                 # =============================================
                 # CATEGORY 2
-                #
-                # BEFORE CONFIRMATION
+                # PRE-CONFIRMATION
                 # =============================================
 
                 "First Pre-Confirmation Signal":
@@ -1695,8 +1818,7 @@ def scan_market(
 
                 # =============================================
                 # CATEGORY 1
-                #
-                # AFTER CONFIRMATION
+                # POST-CONFIRMATION
                 # =============================================
 
                 "First Post-Confirmation Signal":
@@ -1715,7 +1837,7 @@ def scan_market(
                     ],
 
                 # =============================================
-                # CURRENT DAILY STRAT
+                # DAILY STRAT
                 # =============================================
 
                 "Daily STRAT":
@@ -1735,7 +1857,7 @@ def scan_market(
                     ftfc["alignment"],
 
                 # =============================================
-                # RVOL
+                # VOLUME
                 # =============================================
 
                 "RVOL":
@@ -1766,7 +1888,7 @@ def scan_market(
                     ),
 
                 # =============================================
-                # SETUPS
+                # SETUP
                 # =============================================
 
                 "Bullish Setup":
@@ -1807,38 +1929,81 @@ st.sidebar.header(
 
 
 # ============================================================
-# LOAD UNIVERSE
+# LOAD STOCK UNIVERSES
 # ============================================================
 
 with st.spinner(
-    "Loading S&P 500 universe..."
+    "Loading S&P 500 and Nasdaq-100 universes..."
 ):
 
     sp500_tickers = (
         get_sp500_tickers()
     )
 
+    nasdaq100_tickers = (
+        get_nasdaq100_tickers()
+    )
+
 
 # ============================================================
-# UNIVERSE
+# COMBINE + REMOVE DUPLICATES
+# ============================================================
+
+combined_tickers = sorted(
+    set(
+        sp500_tickers
+        +
+        nasdaq100_tickers
+    )
+)
+
+
+duplicate_count = (
+    len(sp500_tickers)
+    +
+    len(nasdaq100_tickers)
+    -
+    len(combined_tickers)
+)
+
+
+# ============================================================
+# MARKET UNIVERSE
 # ============================================================
 
 universe = (
     st.sidebar.selectbox(
         "Market Universe",
         [
+            "S&P 500 + Nasdaq-100",
             "S&P 500",
+            "Nasdaq-100",
             "Custom Watchlist"
         ]
     )
 )
 
 
-if universe == "S&P 500":
+if universe == "S&P 500 + Nasdaq-100":
+
+    selected_tickers = (
+        combined_tickers
+    )
+
+
+elif universe == "S&P 500":
 
     selected_tickers = (
         sp500_tickers
     )
+
+
+elif universe == "Nasdaq-100":
+
+    selected_tickers = (
+        nasdaq100_tickers
+    )
+
 
 else:
 
@@ -1848,19 +2013,30 @@ else:
             value=(
                 "AAPL,MSFT,NVDA,"
                 "AMD,TSLA,AMZN,META"
+            ),
+            help=(
+                "Separate ticker symbols with commas."
             )
         )
     )
 
     selected_tickers = [
 
-        ticker.strip().upper()
+        ticker
+        .strip()
+        .upper()
+        .replace(".", "-")
 
         for ticker
         in custom_input.split(",")
 
         if ticker.strip()
     ]
+
+    # Remove duplicates
+    selected_tickers = sorted(
+        set(selected_tickers)
+    )
 
 
 # ============================================================
@@ -1962,7 +2138,7 @@ actionable_filter = (
 
 
 # ============================================================
-# ACTIONABLE CATEGORY
+# ACTIONABLE CATEGORY FILTER
 # ============================================================
 
 actionable_category_filter = (
@@ -1995,7 +2171,7 @@ ftfc_filter = (
 
 
 # ============================================================
-# RVOL
+# RVOL FILTER
 # ============================================================
 
 minimum_rvol = (
@@ -2009,11 +2185,49 @@ minimum_rvol = (
 )
 
 
+# ============================================================
+# UNIVERSE STATISTICS
+# ============================================================
+
+st.sidebar.divider()
+
+st.sidebar.caption(
+    "Universe Statistics"
+)
+
+c1, c2 = st.sidebar.columns(2)
+
+c1.metric(
+    "S&P 500",
+    len(sp500_tickers)
+)
+
+c2.metric(
+    "Nasdaq-100",
+    len(nasdaq100_tickers)
+)
+
+c3, c4 = st.sidebar.columns(2)
+
+c3.metric(
+    "Duplicates",
+    duplicate_count
+)
+
+c4.metric(
+    "Unique",
+    len(combined_tickers)
+)
+
 st.sidebar.metric(
     "Stocks to Scan",
     len(selected_tickers)
 )
 
+
+# ============================================================
+# RUN BUTTON
+# ============================================================
 
 run_scan = (
     st.sidebar.button(
@@ -2025,7 +2239,7 @@ run_scan = (
 
 
 # ============================================================
-# RUN SCAN
+# RUN SCANNER
 # ============================================================
 
 if run_scan:
@@ -2044,7 +2258,7 @@ if run_scan:
 
     with st.spinner(
         f"Downloading market data for "
-        f"{len(selected_tickers)} stocks..."
+        f"{len(selected_tickers)} unique stocks..."
     ):
 
         market_data = (
@@ -2064,25 +2278,30 @@ if run_scan:
     st.caption(
         f"Downloaded "
         f"{len(market_data)} / "
-        f"{len(selected_tickers)} symbols."
+        f"{len(selected_tickers)} unique symbols."
     )
 
     # ========================================================
     # SCAN
     # ========================================================
 
-    results = scan_market(
-        selected_tickers,
-        market_data
+    results = (
+        scan_market(
+            selected_tickers,
+            market_data
+        )
     )
 
     # ========================================================
-    # FILTERS
+    # APPLY FILTERS
     # ========================================================
 
     if not results.empty:
 
+        # ====================================================
         # WEEKLY SIGNAL
+        # ====================================================
+
         if (
             signal_filter
             == "Previous Week Low Taken"
@@ -2158,7 +2377,9 @@ if run_scan:
         ):
 
             results = results[
-                results["Prev Week STRAT"]
+                results[
+                    "Prev Week STRAT"
+                ]
                 == prev_week_strat_filter
             ]
 
@@ -2172,7 +2393,9 @@ if run_scan:
         ):
 
             results = results[
-                results["Current Week STRAT"]
+                results[
+                    "Current Week STRAT"
+                ]
                 == current_week_strat_filter
             ]
 
@@ -2186,7 +2409,9 @@ if run_scan:
         ):
 
             results = results[
-                results["Daily STRAT"]
+                results[
+                    "Daily STRAT"
+                ]
                 == daily_strat_filter
             ]
 
@@ -2238,10 +2463,6 @@ if run_scan:
                     )
                 ]
 
-        # ====================================================
-        # CATEGORY WITHOUT SPECIFIC CANDLE
-        # ====================================================
-
         elif (
             actionable_category_filter
             == "Pre-Confirmation"
@@ -2250,7 +2471,8 @@ if run_scan:
             results = results[
                 results[
                     "First Pre-Confirmation Signal"
-                ].notna()
+                ]
+                .notna()
             ]
 
         elif (
@@ -2261,7 +2483,8 @@ if run_scan:
             results = results[
                 results[
                     "First Post-Confirmation Signal"
-                ].notna()
+                ]
+                .notna()
             ]
 
         # ====================================================
@@ -2288,7 +2511,7 @@ if run_scan:
             ]
 
     # ========================================================
-    # OUTPUT
+    # RESULTS
     # ========================================================
 
     st.divider()
@@ -2333,7 +2556,7 @@ if run_scan:
         )
 
         c4.metric(
-            "Pre-Confirm Signals",
+            "Pre-Confirm",
             int(
                 results[
                     "First Pre-Confirmation Signal"
@@ -2344,7 +2567,7 @@ if run_scan:
         )
 
         c5.metric(
-            "Post-Confirm Signals",
+            "Post-Confirm",
             int(
                 results[
                     "First Post-Confirmation Signal"
@@ -2375,7 +2598,7 @@ if run_scan:
         )
 
         # ====================================================
-        # MAIN RESULTS
+        # MAIN RESULTS TABLE
         # ====================================================
 
         st.subheader(
@@ -2393,6 +2616,10 @@ if run_scan:
             "Prev Week High",
 
             "Prev Week STRAT",
+
+            "Current Week Low",
+
+            "Current Week High",
 
             "Current Week STRAT",
 
@@ -2466,6 +2693,16 @@ if run_scan:
                         format="$%.2f"
                     ),
 
+                "Current Week Low":
+                    st.column_config.NumberColumn(
+                        format="$%.2f"
+                    ),
+
+                "Current Week High":
+                    st.column_config.NumberColumn(
+                        format="$%.2f"
+                    ),
+
                 "RVOL":
                     st.column_config.NumberColumn(
                         format="%.2fx"
@@ -2484,7 +2721,7 @@ if run_scan:
         )
 
         # ====================================================
-        # POST-CONFIRMATION SIGNALS
+        # POST-CONFIRMATION
         # ====================================================
 
         confirmed = results[
@@ -2501,7 +2738,7 @@ if run_scan:
 
             st.caption(
                 "First Hammer, Shooting Star or Inside Bar "
-                "after a PWL reclaim or PWH rejection."
+                "after PWL reclaim or PWH rejection."
             )
 
             st.dataframe(
@@ -2523,7 +2760,7 @@ if run_scan:
             )
 
         # ====================================================
-        # PRE-CONFIRMATION SIGNALS
+        # PRE-CONFIRMATION
         # ====================================================
 
         unconfirmed = results[
@@ -2540,8 +2777,8 @@ if run_scan:
 
             st.caption(
                 "First Hammer, Shooting Star or Inside Bar "
-                "after the weekly level was taken but before "
-                "a reclaim/rejection occurred."
+                "after PWL/PWH is taken but before "
+                "reclaim/rejection."
             )
 
             st.dataframe(
@@ -2563,7 +2800,7 @@ if run_scan:
             )
 
         # ====================================================
-        # BULLISH SETUPS
+        # BULLISH
         # ====================================================
 
         bullish = results[
@@ -2578,6 +2815,13 @@ if run_scan:
                 "🟢 Bullish STRAT Setups"
             )
 
+            st.caption(
+                "PWL Taken → Reclaimed → "
+                "2U Green / 2D Green / 2U Red / "
+                "1 Inside / 3 Outside → "
+                "Weekly FTFC Up"
+            )
+
             st.dataframe(
                 bullish[
                     [
@@ -2586,13 +2830,11 @@ if run_scan:
                         "Prev Week Low",
                         "Low Sweep Date",
                         "Low Reclaim Date",
-                        "Prev Week STRAT",
                         "Current Week STRAT",
                         "Daily STRAT",
                         "First Post-Confirmation Signal",
                         "Post-Confirmation Date",
                         "Weekly FTFC",
-                        "Monthly FTFC",
                         "RVOL",
                         "Signal"
                     ]
@@ -2602,7 +2844,7 @@ if run_scan:
             )
 
         # ====================================================
-        # BEARISH SETUPS
+        # BEARISH
         # ====================================================
 
         bearish = results[
@@ -2617,6 +2859,13 @@ if run_scan:
                 "🔴 Bearish STRAT Setups"
             )
 
+            st.caption(
+                "PWH Taken → Rejected → "
+                "2D Red / 2U Red / 2D Green / "
+                "1 Inside / 3 Outside → "
+                "Weekly FTFC Down"
+            )
+
             st.dataframe(
                 bearish[
                     [
@@ -2625,13 +2874,11 @@ if run_scan:
                         "Prev Week High",
                         "High Sweep Date",
                         "High Rejection Date",
-                        "Prev Week STRAT",
                         "Current Week STRAT",
                         "Daily STRAT",
                         "First Post-Confirmation Signal",
                         "Post-Confirmation Date",
                         "Weekly FTFC",
-                        "Monthly FTFC",
                         "RVOL",
                         "Signal"
                     ]
@@ -2641,7 +2888,7 @@ if run_scan:
             )
 
         # ====================================================
-        # CSV
+        # DOWNLOAD CSV
         # ====================================================
 
         csv = (
@@ -2656,7 +2903,7 @@ if run_scan:
             "⬇️ Download Results",
             data=csv,
             file_name=(
-                "sp500_weekly_strat_scanner.csv"
+                "sp500_nasdaq100_strat_scanner.csv"
             ),
             mime="text/csv",
             use_container_width=True
@@ -2669,17 +2916,35 @@ if run_scan:
 
 else:
 
-    if sp500_tickers:
+    if (
+        sp500_tickers
+        or
+        nasdaq100_tickers
+    ):
 
         st.success(
-            f"✓ Loaded "
-            f"{len(sp500_tickers)} "
-            f"S&P 500 symbols."
+            f"✓ S&P 500: {len(sp500_tickers)} | "
+            f"Nasdaq-100: {len(nasdaq100_tickers)} | "
+            f"Duplicates removed: {duplicate_count} | "
+            f"Unique combined stocks: {len(combined_tickers)}"
         )
 
     st.markdown(
         """
-### 🟢 Bullish STRAT Setup
+### 📊 Market Universe
+
+You can scan:
+
+- **S&P 500 + Nasdaq-100**
+- **S&P 500 only**
+- **Nasdaq-100 only**
+- **Custom Watchlist**
+
+When the combined universe is selected, duplicate stocks are
+automatically removed before market data is downloaded.
+
+
+### 🟢 Bullish Setup
 
 **PWL Taken → Reclaimed → Daily STRAT → Weekly FTFC Up**
 
@@ -2692,7 +2957,7 @@ Accepted Daily STRAT:
 - 3 Outside
 
 
-### 🔴 Bearish STRAT Setup
+### 🔴 Bearish Setup
 
 **PWH Taken → Rejected → Daily STRAT → Weekly FTFC Down**
 
@@ -2705,26 +2970,19 @@ Accepted Daily STRAT:
 - 3 Outside
 
 
-### ⚠️ Pre-Confirmation Actionable Signal
+### ⚠️ Pre-Confirmation Signal
 
-The scanner starts watching after:
-
-**PWL Taken → Not Yet Reclaimed**
-
-or
-
-**PWH Taken → Not Yet Rejected**
-
-It records the first:
+After the previous-week level is taken, but before it is
+reclaimed/rejected, the scanner records the first:
 
 - Hammer
 - Shooting Star
 - Inside Bar
 
 
-### ✅ Post-Confirmation Actionable Signal
+### ✅ Post-Confirmation Signal
 
-The scanner separately records the first actionable candle after:
+After:
 
 **PWL Taken → Reclaimed**
 
@@ -2732,7 +2990,7 @@ or
 
 **PWH Taken → Rejected**
 
-Actionable candles:
+the scanner independently records the first:
 
 - Hammer
 - Shooting Star
@@ -2743,13 +3001,10 @@ Actionable candles:
 
 The scanner calculates:
 
-**Previous Week STRAT**
+- Previous Week STRAT
+- Current Week STRAT
 
-and
-
-**Current Week STRAT**
-
-Available classifications:
+Classifications:
 
 - 1 Inside
 - 2U Green
