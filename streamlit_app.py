@@ -9,28 +9,25 @@ import time
 # ============================================================
 
 st.set_page_config(
-    page_title="S&P 500 + Nasdaq-100 STRAT Scanner",
+    page_title="STRAT Market Scanner",
     page_icon="📊",
     layout="wide"
 )
 
-st.title("📊 S&P 500 + Nasdaq-100 Weekly STRAT Scanner")
+st.title("📊 S&P 500 + Nasdaq-100 STRAT Scanner")
 
 st.caption(
-    "Scans S&P 500 and Nasdaq-100 stocks for previous-week "
-    "high/low sweeps, reclaims/rejections, STRAT candles, "
-    "actionable daily signals, FTFC and relative volume."
+    "Weekly and Monthly STRAT scanners with previous-period "
+    "liquidity sweeps, reclaim/rejection, actionable candles, "
+    "FTFC and relative volume."
 )
 
 
 # ============================================================
-# S&P 500 UNIVERSE
+# S&P 500
 # ============================================================
 
-@st.cache_data(
-    ttl=86400,
-    show_spinner=False
-)
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_sp500_tickers():
 
     url = (
@@ -44,9 +41,8 @@ def get_sp500_tickers():
         df = pd.read_csv(url)
 
         if "Symbol" not in df.columns:
-
             raise ValueError(
-                "S&P 500 dataset does not contain Symbol column."
+                "S&P 500 dataset missing Symbol column."
             )
 
         tickers = (
@@ -59,13 +55,11 @@ def get_sp500_tickers():
         )
 
         tickers = [
-            ticker.replace(".", "-")
-            for ticker in tickers
+            x.replace(".", "-")
+            for x in tickers
         ]
 
-        return sorted(
-            set(tickers)
-        )
+        return sorted(set(tickers))
 
     except Exception as e:
 
@@ -77,22 +71,13 @@ def get_sp500_tickers():
 
 
 # ============================================================
-# NASDAQ-100 UNIVERSE
-#
-# SELF-CONTAINED LIST
-#
-# This avoids HTTP 403 errors from Wikipedia / other sites.
-# Update this list when Nasdaq-100 constituents change.
+# NASDAQ-100
 # ============================================================
 
-@st.cache_data(
-    ttl=86400,
-    show_spinner=False
-)
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_nasdaq100_tickers():
 
     tickers = [
-
         "AAPL",
         "ABNB",
         "ADBE",
@@ -189,46 +174,21 @@ def get_nasdaq100_tickers():
         "ZS"
     ]
 
-    tickers = [
-
-        ticker
-        .strip()
-        .upper()
-        .replace(".", "-")
-
-        for ticker in tickers
-
-        if ticker.strip()
-    ]
-
-    return sorted(
-        set(tickers)
-    )
+    return sorted(set(tickers))
 
 
 # ============================================================
-# DOWNLOAD MARKET DATA
+# MARKET DATA
+#
+# ONE DOWNLOAD SUPPORTS BOTH TABS
 # ============================================================
 
-@st.cache_data(
-    ttl=900,
-    show_spinner=False
-)
+@st.cache_data(ttl=900, show_spinner=False)
 def download_market_data(tickers):
 
-    all_data = {}
+    results = {}
 
-    if not tickers:
-
-        return all_data
-
-    # ========================================================
-    # REMOVE DUPLICATES BEFORE DOWNLOAD
-    # ========================================================
-
-    tickers = sorted(
-        set(tickers)
-    )
+    tickers = sorted(set(tickers))
 
     batch_size = 50
 
@@ -245,35 +205,18 @@ def download_market_data(tickers):
         try:
 
             data = yf.download(
-
                 tickers=batch,
-
-                period="6mo",
-
+                period="1y",
                 interval="1d",
-
                 group_by="ticker",
-
                 auto_adjust=False,
-
                 threads=True,
-
                 progress=False,
-
                 timeout=30
             )
 
-            if (
-                data is None
-                or
-                data.empty
-            ):
-
+            if data is None or data.empty:
                 continue
-
-            # =================================================
-            # MULTIPLE TICKERS
-            # =================================================
 
             if len(batch) > 1:
 
@@ -281,17 +224,16 @@ def download_market_data(tickers):
                     data.columns,
                     pd.MultiIndex
                 ):
-
                     continue
 
-                level_0 = (
+                level0 = (
                     data.columns
                     .get_level_values(0)
                     .unique()
                     .tolist()
                 )
 
-                level_1 = (
+                level1 = (
                     data.columns
                     .get_level_values(1)
                     .unique()
@@ -302,14 +244,14 @@ def download_market_data(tickers):
 
                     try:
 
-                        if ticker in level_0:
+                        if ticker in level0:
 
                             ticker_df = (
                                 data[ticker]
                                 .copy()
                             )
 
-                        elif ticker in level_1:
+                        elif ticker in level1:
 
                             ticker_df = (
                                 data.xs(
@@ -321,30 +263,19 @@ def download_market_data(tickers):
                             )
 
                         else:
-
                             continue
 
                         if not ticker_df.empty:
-
-                            all_data[
-                                ticker
-                            ] = ticker_df
+                            results[ticker] = ticker_df
 
                     except Exception:
-
                         continue
-
-            # =================================================
-            # SINGLE TICKER
-            # =================================================
 
             else:
 
                 ticker = batch[0]
 
-                ticker_df = (
-                    data.copy()
-                )
+                ticker_df = data.copy()
 
                 if isinstance(
                     ticker_df.columns,
@@ -357,9 +288,7 @@ def download_market_data(tickers):
                     ):
 
                         ticker_df = (
-                            ticker_df[
-                                ticker
-                            ]
+                            ticker_df[ticker]
                             .copy()
                         )
 
@@ -378,20 +307,14 @@ def download_market_data(tickers):
                         )
 
                 if not ticker_df.empty:
-
-                    all_data[
-                        ticker
-                    ] = ticker_df
+                    results[ticker] = ticker_df
 
         except Exception:
-
             continue
 
-        time.sleep(
-            0.25
-        )
+        time.sleep(0.20)
 
-    return all_data
+    return results
 
 
 # ============================================================
@@ -406,15 +329,9 @@ def clean_ticker_dataframe(
     try:
 
         if ticker not in market_data:
-
             return None
 
-        df = (
-            market_data[
-                ticker
-            ]
-            .copy()
-        )
+        df = market_data[ticker].copy()
 
         if isinstance(
             df.columns,
@@ -422,20 +339,13 @@ def clean_ticker_dataframe(
         ):
 
             df.columns = [
-
                 col[-1]
-                if isinstance(
-                    col,
-                    tuple
-                )
+                if isinstance(col, tuple)
                 else col
-
-                for col
-                in df.columns
+                for col in df.columns
             ]
 
         required = [
-
             "Open",
             "High",
             "Low",
@@ -444,69 +354,42 @@ def clean_ticker_dataframe(
         ]
 
         if not all(
-
-            column in df.columns
-
-            for column
-            in required
+            x in df.columns
+            for x in required
         ):
-
             return None
 
-        df = (
-            df[
-                required
+        df = df[required].copy()
+
+        for col in required:
+
+            df[col] = pd.to_numeric(
+                df[col],
+                errors="coerce"
+            )
+
+        df = df.dropna(
+            subset=[
+                "Open",
+                "High",
+                "Low",
+                "Close"
             ]
-            .copy()
-        )
-
-        for column in required:
-
-            df[column] = (
-                pd.to_numeric(
-                    df[column],
-                    errors="coerce"
-                )
-            )
-
-        df = (
-            df.dropna(
-                subset=[
-                    "Open",
-                    "High",
-                    "Low",
-                    "Close"
-                ]
-            )
         )
 
         if df.empty:
-
             return None
 
-        df.index = (
-            pd.to_datetime(
-                df.index
-            )
-        )
+        df.index = pd.to_datetime(df.index)
 
         try:
-
-            df.index = (
-                df.index
-                .tz_localize(None)
-            )
-
+            df.index = df.index.tz_localize(None)
         except Exception:
-
             pass
 
-        return (
-            df.sort_index()
-        )
+        return df.sort_index()
 
     except Exception:
-
         return None
 
 
@@ -515,80 +398,38 @@ def clean_ticker_dataframe(
 # ============================================================
 
 def classify_strat_candle(
-
     current_open,
     current_high,
     current_low,
     current_close,
-
     previous_high,
     previous_low
 ):
 
-    # ========================================================
-    # 3 OUTSIDE
-    # ========================================================
-
     if (
-        current_high
-        > previous_high
-
+        current_high > previous_high
         and
-
-        current_low
-        < previous_low
+        current_low < previous_low
     ):
-
         return "3 Outside"
 
-    # ========================================================
-    # 1 INSIDE
-    # ========================================================
-
     if (
-        current_high
-        <= previous_high
-
+        current_high <= previous_high
         and
-
-        current_low
-        >= previous_low
+        current_low >= previous_low
     ):
-
         return "1 Inside"
 
-    # ========================================================
-    # 2 UP
-    # ========================================================
+    if current_high > previous_high:
 
-    if (
-        current_high
-        > previous_high
-    ):
-
-        if (
-            current_close
-            >= current_open
-        ):
-
+        if current_close >= current_open:
             return "2U Green"
 
         return "2U Red"
 
-    # ========================================================
-    # 2 DOWN
-    # ========================================================
+    if current_low < previous_low:
 
-    if (
-        current_low
-        < previous_low
-    ):
-
-        if (
-            current_close
-            >= current_open
-        ):
-
+        if current_close >= current_open:
             return "2D Green"
 
         return "2D Red"
@@ -597,271 +438,82 @@ def classify_strat_candle(
 
 
 # ============================================================
-# WEEKLY LEVELS
+# ACTIONABLE CANDLE
 # ============================================================
 
-def get_weekly_levels(df):
+def classify_actionable_candle(
+    current_open,
+    current_high,
+    current_low,
+    current_close,
+    previous_high,
+    previous_low
+):
+
+    candle_range = (
+        current_high - current_low
+    )
+
+    if candle_range <= 0:
+        return None
+
+    body = abs(
+        current_close - current_open
+    )
+
+    upper_wick = (
+        current_high
+        - max(
+            current_open,
+            current_close
+        )
+    )
+
+    lower_wick = (
+        min(
+            current_open,
+            current_close
+        )
+        - current_low
+    )
+
+    body_for_ratio = max(
+        body,
+        candle_range * 0.05
+    )
+
+    # INSIDE BAR
 
     if (
-        df is None
-        or
-        len(df) < 15
+        current_high <= previous_high
+        and
+        current_low >= previous_low
     ):
-
-        return None
-
-    temp = (
-        df.copy()
-    )
-
-    temp["Week"] = (
-        temp.index
-        .to_period(
-            "W-FRI"
-        )
-    )
-
-    weekly = (
-
-        temp.groupby(
-            "Week"
-        )
-
-        .agg(
-
-            Open=(
-                "Open",
-                "first"
-            ),
-
-            High=(
-                "High",
-                "max"
-            ),
-
-            Low=(
-                "Low",
-                "min"
-            ),
-
-            Close=(
-                "Close",
-                "last"
-            ),
-
-            Volume=(
-                "Volume",
-                "sum"
-            )
-        )
-    )
-
-    if len(weekly) < 3:
-
-        return None
-
-    # ========================================================
-    # CURRENT WEEK
-    # ========================================================
-
-    current_week_period = (
-        temp[
-            "Week"
-        ]
-        .iloc[-1]
-    )
-
-    current_week_data = (
-
-        temp[
-            temp["Week"]
-            == current_week_period
-        ]
-
-        .copy()
-    )
-
-    # ========================================================
-    # COMPLETED WEEKS
-    # ========================================================
-
-    completed_weeks = (
-
-        weekly[
-            weekly.index
-            < current_week_period
-        ]
-    )
-
-    if len(
-        completed_weeks
-    ) < 2:
-
-        return None
-
-    previous_week = (
-        completed_weeks
-        .iloc[-1]
-    )
-
-    two_weeks_ago = (
-        completed_weeks
-        .iloc[-2]
-    )
-
-    # ========================================================
-    # PREVIOUS WEEK
-    # ========================================================
-
-    previous_week_open = float(
-        previous_week[
-            "Open"
-        ]
-    )
-
-    previous_week_high = float(
-        previous_week[
-            "High"
-        ]
-    )
-
-    previous_week_low = float(
-        previous_week[
-            "Low"
-        ]
-    )
-
-    previous_week_close = float(
-        previous_week[
-            "Close"
-        ]
-    )
-
-    # ========================================================
-    # PREVIOUS WEEK STRAT
-    # ========================================================
-
-    previous_week_strat = (
-
-        classify_strat_candle(
-
-            previous_week_open,
-
-            previous_week_high,
-
-            previous_week_low,
-
-            previous_week_close,
-
-            float(
-                two_weeks_ago[
-                    "High"
-                ]
-            ),
-
-            float(
-                two_weeks_ago[
-                    "Low"
-                ]
-            )
-        )
-    )
-
-    # ========================================================
-    # CURRENT WEEK
-    # ========================================================
-
-    current_week_open = float(
-
-        current_week_data[
-            "Open"
-        ]
-        .iloc[0]
-    )
-
-    current_week_high = float(
-
-        current_week_data[
-            "High"
-        ]
-        .max()
-    )
-
-    current_week_low = float(
-
-        current_week_data[
-            "Low"
-        ]
-        .min()
-    )
-
-    current_week_close = float(
-
-        current_week_data[
-            "Close"
-        ]
-        .iloc[-1]
-    )
-
-    # ========================================================
-    # CURRENT WEEK STRAT
-    # ========================================================
-
-    current_week_strat = (
-
-        classify_strat_candle(
-
-            current_week_open,
-
-            current_week_high,
-
-            current_week_low,
-
-            current_week_close,
-
-            previous_week_high,
-
-            previous_week_low
-        )
-    )
-
-    return {
-
-        "previous_week_open":
-            previous_week_open,
-
-        "previous_week_high":
-            previous_week_high,
-
-        "previous_week_low":
-            previous_week_low,
-
-        "previous_week_close":
-            previous_week_close,
-
-        "previous_week_strat":
-            previous_week_strat,
-
-        "current_week_open":
-            current_week_open,
-
-        "current_week_high":
-            current_week_high,
-
-        "current_week_low":
-            current_week_low,
-
-        "current_week_close":
-            current_week_close,
-
-        "current_week_strat":
-            current_week_strat,
-
-        "current_week":
-            str(
-                current_week_period
-            )
-    }
+        return "Inside Bar"
+
+    # HAMMER
+
+    if (
+        lower_wick >= 2 * body_for_ratio
+        and
+        upper_wick <= body_for_ratio
+        and
+        body <= candle_range * 0.40
+    ):
+        return "Hammer"
+
+    # SHOOTING STAR
+
+    if (
+        upper_wick >= 2 * body_for_ratio
+        and
+        lower_wick <= body_for_ratio
+        and
+        body <= candle_range * 0.40
+    ):
+        return "Shooting Star"
+
+    return None
 
 
 # ============================================================
@@ -870,940 +522,339 @@ def get_weekly_levels(df):
 
 def get_daily_strat(df):
 
-    if (
-        df is None
-        or
-        len(df) < 2
-    ):
-
+    if df is None or len(df) < 2:
         return "N/A"
 
-    previous = (
-        df.iloc[-2]
+    current = df.iloc[-1]
+    previous = df.iloc[-2]
+
+    return classify_strat_candle(
+        float(current["Open"]),
+        float(current["High"]),
+        float(current["Low"]),
+        float(current["Close"]),
+        float(previous["High"]),
+        float(previous["Low"])
     )
 
-    current = (
-        df.iloc[-1]
+
+# ============================================================
+# BUILD WEEKLY CANDLES
+# ============================================================
+
+def build_weekly_dataframe(df):
+
+    temp = df.copy()
+
+    temp["Period"] = (
+        temp.index.to_period("W-FRI")
     )
 
-    return (
-        classify_strat_candle(
-
-            float(
-                current[
-                    "Open"
-                ]
-            ),
-
-            float(
-                current[
-                    "High"
-                ]
-            ),
-
-            float(
-                current[
-                    "Low"
-                ]
-            ),
-
-            float(
-                current[
-                    "Close"
-                ]
-            ),
-
-            float(
-                previous[
-                    "High"
-                ]
-            ),
-
-            float(
-                previous[
-                    "Low"
-                ]
-            )
+    weekly = (
+        temp.groupby("Period")
+        .agg(
+            Open=("Open", "first"),
+            High=("High", "max"),
+            Low=("Low", "min"),
+            Close=("Close", "last"),
+            Volume=("Volume", "sum")
         )
     )
 
+    return weekly
+
 
 # ============================================================
-# ACTIONABLE CANDLE
-#
-# INSIDE BAR
-# HAMMER
-# SHOOTING STAR
+# BUILD MONTHLY CANDLES
 # ============================================================
 
-def classify_actionable_candle(
+def build_monthly_dataframe(df):
 
-    current_open,
-    current_high,
-    current_low,
-    current_close,
+    temp = df.copy()
 
-    previous_high,
-    previous_low
-):
-
-    candle_range = (
-        current_high
-        - current_low
+    temp["Period"] = (
+        temp.index.to_period("M")
     )
 
-    if candle_range <= 0:
+    monthly = (
+        temp.groupby("Period")
+        .agg(
+            Open=("Open", "first"),
+            High=("High", "max"),
+            Low=("Low", "min"),
+            Close=("Close", "last"),
+            Volume=("Volume", "sum")
+        )
+    )
 
+    return monthly
+
+
+# ============================================================
+# WEEKLY LEVELS
+# ============================================================
+
+def get_weekly_levels(df):
+
+    weekly = build_weekly_dataframe(df)
+
+    if len(weekly) < 3:
         return None
 
-    body = abs(
-        current_close
-        - current_open
-    )
-
-    upper_wick = (
-
-        current_high
-
-        - max(
-            current_open,
-            current_close
-        )
-    )
-
-    lower_wick = (
-
-        min(
-            current_open,
-            current_close
-        )
-
-        - current_low
-    )
-
-    body_for_ratio = max(
-
-        body,
-
-        candle_range
-        * 0.05
-    )
-
-    # ========================================================
-    # INSIDE BAR
-    # ========================================================
-
-    if (
-        current_high
-        <= previous_high
-
-        and
-
-        current_low
-        >= previous_low
-    ):
-
-        return "Inside Bar"
-
-    # ========================================================
-    # HAMMER
-    # ========================================================
-
-    hammer = (
-
-        lower_wick
-        >= (
-            2
-            * body_for_ratio
-        )
-
-        and
-
-        upper_wick
-        <= body_for_ratio
-
-        and
-
-        body
-        <= (
-            candle_range
-            * 0.40
-        )
-    )
-
-    if hammer:
-
-        return "Hammer"
-
-    # ========================================================
-    # SHOOTING STAR
-    # ========================================================
-
-    shooting_star = (
-
-        upper_wick
-        >= (
-            2
-            * body_for_ratio
-        )
-
-        and
-
-        lower_wick
-        <= body_for_ratio
-
-        and
-
-        body
-        <= (
-            candle_range
-            * 0.40
-        )
-    )
-
-    if shooting_star:
-
-        return "Shooting Star"
-
-    return None
-
-
-# ============================================================
-# FIND ACTIONABLE SIGNALS
-#
-# CATEGORY 2
-# PRE-CONFIRMATION:
-# Level taken but not yet reclaimed/rejected.
-#
-# CATEGORY 1
-# POST-CONFIRMATION:
-# Level taken + reclaimed/rejected.
-# ============================================================
-
-def find_actionable_signals(
-
-    df,
-
-    previous_week_high,
-
-    previous_week_low
-):
-
-    empty_result = {
-
-        "pre_signal":
-            None,
-
-        "pre_date":
-            None,
-
-        "pre_event":
-            None,
-
-        "post_signal":
-            None,
-
-        "post_date":
-            None,
-
-        "post_event":
-            None,
-
-        "low_taken_date":
-            None,
-
-        "low_reclaim_date":
-            None,
-
-        "high_taken_date":
-            None,
-
-        "high_rejection_date":
-            None
-    }
-
-    if (
-        df is None
-        or
-        len(df) < 2
-    ):
-
-        return empty_result
-
-    # ========================================================
-    # CURRENT WEEK
-    # ========================================================
-
     current_period = (
-
         df.index[-1]
-
-        .to_period(
-            "W-FRI"
-        )
+        .to_period("W-FRI")
     )
 
-    current_week = (
+    if current_period not in weekly.index:
+        return None
 
-        df[
-            df.index
-            .to_period(
-                "W-FRI"
-            )
-            == current_period
-        ]
+    completed = weekly[
+        weekly.index < current_period
+    ]
 
-        .copy()
+    if len(completed) < 2:
+        return None
+
+    current = weekly.loc[current_period]
+    previous = completed.iloc[-1]
+    two_back = completed.iloc[-2]
+
+    previous_strat = classify_strat_candle(
+        float(previous["Open"]),
+        float(previous["High"]),
+        float(previous["Low"]),
+        float(previous["Close"]),
+        float(two_back["High"]),
+        float(two_back["Low"])
     )
 
-    if current_week.empty:
-
-        return empty_result
-
-    # ========================================================
-    # STATE
-    # ========================================================
-
-    low_taken = False
-
-    high_taken = False
-
-    low_reclaimed = False
-
-    high_rejected = False
-
-    low_taken_date = None
-
-    high_taken_date = None
-
-    low_reclaim_date = None
-
-    high_rejection_date = None
-
-    pre_signal = None
-
-    pre_signal_date = None
-
-    pre_event = None
-
-    post_signal = None
-
-    post_signal_date = None
-
-    post_event = None
-
-    # ========================================================
-    # WALK THROUGH CURRENT WEEK
-    # ========================================================
-
-    for (
-        current_date,
-        current_row
-    ) in current_week.iterrows():
-
-        current_open = float(
-            current_row[
-                "Open"
-            ]
-        )
-
-        current_high = float(
-            current_row[
-                "High"
-            ]
-        )
-
-        current_low = float(
-            current_row[
-                "Low"
-            ]
-        )
-
-        current_close = float(
-            current_row[
-                "Close"
-            ]
-        )
-
-        # ====================================================
-        # PWL TAKEN
-        # ====================================================
-
-        if (
-            not low_taken
-
-            and
-
-            current_low
-            < previous_week_low
-        ):
-
-            low_taken = True
-
-            low_taken_date = (
-                current_date
-            )
-
-        # ====================================================
-        # PWH TAKEN
-        # ====================================================
-
-        if (
-            not high_taken
-
-            and
-
-            current_high
-            > previous_week_high
-        ):
-
-            high_taken = True
-
-            high_taken_date = (
-                current_date
-            )
-
-        # ====================================================
-        # PWL RECLAIM
-        # ====================================================
-
-        if (
-            low_taken
-
-            and
-
-            not low_reclaimed
-
-            and
-
-            current_close
-            > previous_week_low
-        ):
-
-            low_reclaimed = True
-
-            low_reclaim_date = (
-                current_date
-            )
-
-        # ====================================================
-        # PWH REJECTION
-        # ====================================================
-
-        if (
-            high_taken
-
-            and
-
-            not high_rejected
-
-            and
-
-            current_close
-            < previous_week_high
-        ):
-
-            high_rejected = True
-
-            high_rejection_date = (
-                current_date
-            )
-
-        # ====================================================
-        # PREVIOUS DAILY CANDLE
-        # ====================================================
-
-        location = (
-            df.index
-            .get_loc(
-                current_date
-            )
-        )
-
-        if location == 0:
-
-            continue
-
-        previous_row = (
-            df.iloc[
-                location - 1
-            ]
-        )
-
-        # ====================================================
-        # ACTIONABLE CANDLE
-        # ====================================================
-
-        actionable = (
-
-            classify_actionable_candle(
-
-                current_open,
-
-                current_high,
-
-                current_low,
-
-                current_close,
-
-                float(
-                    previous_row[
-                        "High"
-                    ]
-                ),
-
-                float(
-                    previous_row[
-                        "Low"
-                    ]
-                )
-            )
-        )
-
-        if actionable is None:
-
-            continue
-
-        # ====================================================
-        # CATEGORY 1
-        #
-        # POST-CONFIRMATION
-        # ====================================================
-
-        if post_signal is None:
-
-            post_candidates = []
-
-            if (
-                low_taken
-
-                and
-
-                low_reclaimed
-
-                and
-
-                low_reclaim_date
-                is not None
-
-                and
-
-                current_date
-                >= low_reclaim_date
-            ):
-
-                post_candidates.append(
-                    (
-                        low_reclaim_date,
-
-                        "PWL Taken → Reclaimed"
-                    )
-                )
-
-            if (
-                high_taken
-
-                and
-
-                high_rejected
-
-                and
-
-                high_rejection_date
-                is not None
-
-                and
-
-                current_date
-                >= high_rejection_date
-            ):
-
-                post_candidates.append(
-                    (
-                        high_rejection_date,
-
-                        "PWH Taken → Rejected"
-                    )
-                )
-
-            if post_candidates:
-
-                post_candidates.sort(
-                    key=lambda x: x[0]
-                )
-
-                post_signal = (
-                    actionable
-                )
-
-                post_signal_date = (
-                    current_date
-                )
-
-                post_event = (
-                    post_candidates[
-                        0
-                    ][1]
-                )
-
-        # ====================================================
-        # CATEGORY 2
-        #
-        # PRE-CONFIRMATION
-        # ====================================================
-
-        if pre_signal is None:
-
-            pre_candidates = []
-
-            if (
-                low_taken
-
-                and
-
-                not low_reclaimed
-
-                and
-
-                low_taken_date
-                is not None
-
-                and
-
-                current_date
-                >= low_taken_date
-            ):
-
-                pre_candidates.append(
-                    (
-                        low_taken_date,
-
-                        "PWL Taken → Not Yet Reclaimed"
-                    )
-                )
-
-            if (
-                high_taken
-
-                and
-
-                not high_rejected
-
-                and
-
-                high_taken_date
-                is not None
-
-                and
-
-                current_date
-                >= high_taken_date
-            ):
-
-                pre_candidates.append(
-                    (
-                        high_taken_date,
-
-                        "PWH Taken → Not Yet Rejected"
-                    )
-                )
-
-            if pre_candidates:
-
-                pre_candidates.sort(
-                    key=lambda x: x[0]
-                )
-
-                pre_signal = (
-                    actionable
-                )
-
-                pre_signal_date = (
-                    current_date
-                )
-
-                pre_event = (
-                    pre_candidates[
-                        0
-                    ][1]
-                )
-
-    # ========================================================
-    # RETURN
-    # ========================================================
+    current_strat = classify_strat_candle(
+        float(current["Open"]),
+        float(current["High"]),
+        float(current["Low"]),
+        float(current["Close"]),
+        float(previous["High"]),
+        float(previous["Low"])
+    )
 
     return {
+        "previous_open":
+            float(previous["Open"]),
 
-        "pre_signal":
-            pre_signal,
+        "previous_high":
+            float(previous["High"]),
 
-        "pre_date":
-            (
-                pre_signal_date
-                .strftime(
-                    "%Y-%m-%d"
-                )
+        "previous_low":
+            float(previous["Low"]),
 
-                if pre_signal_date
-                is not None
+        "previous_close":
+            float(previous["Close"]),
 
-                else None
-            ),
+        "previous_strat":
+            previous_strat,
 
-        "pre_event":
-            pre_event,
+        "current_open":
+            float(current["Open"]),
 
-        "post_signal":
-            post_signal,
+        "current_high":
+            float(current["High"]),
 
-        "post_date":
-            (
-                post_signal_date
-                .strftime(
-                    "%Y-%m-%d"
-                )
+        "current_low":
+            float(current["Low"]),
 
-                if post_signal_date
-                is not None
+        "current_close":
+            float(current["Close"]),
 
-                else None
-            ),
+        "current_strat":
+            current_strat,
 
-        "post_event":
-            post_event,
-
-        "low_taken_date":
-            (
-                low_taken_date
-                .strftime(
-                    "%Y-%m-%d"
-                )
-
-                if low_taken_date
-                is not None
-
-                else None
-            ),
-
-        "low_reclaim_date":
-            (
-                low_reclaim_date
-                .strftime(
-                    "%Y-%m-%d"
-                )
-
-                if low_reclaim_date
-                is not None
-
-                else None
-            ),
-
-        "high_taken_date":
-            (
-                high_taken_date
-                .strftime(
-                    "%Y-%m-%d"
-                )
-
-                if high_taken_date
-                is not None
-
-                else None
-            ),
-
-        "high_rejection_date":
-            (
-                high_rejection_date
-                .strftime(
-                    "%Y-%m-%d"
-                )
-
-                if high_rejection_date
-                is not None
-
-                else None
-            )
+        "current_period":
+            current_period
     }
+
+
+# ============================================================
+# MONTHLY LEVELS
+# ============================================================
+
+def get_monthly_levels(df):
+
+    monthly = build_monthly_dataframe(df)
+
+    if len(monthly) < 3:
+        return None
+
+    current_period = (
+        df.index[-1]
+        .to_period("M")
+    )
+
+    if current_period not in monthly.index:
+        return None
+
+    completed = monthly[
+        monthly.index < current_period
+    ]
+
+    if len(completed) < 2:
+        return None
+
+    current = monthly.loc[current_period]
+    previous = completed.iloc[-1]
+    two_back = completed.iloc[-2]
+
+    previous_strat = classify_strat_candle(
+        float(previous["Open"]),
+        float(previous["High"]),
+        float(previous["Low"]),
+        float(previous["Close"]),
+        float(two_back["High"]),
+        float(two_back["Low"])
+    )
+
+    current_strat = classify_strat_candle(
+        float(current["Open"]),
+        float(current["High"]),
+        float(current["Low"]),
+        float(current["Close"]),
+        float(previous["High"]),
+        float(previous["Low"])
+    )
+
+    return {
+        "previous_open":
+            float(previous["Open"]),
+
+        "previous_high":
+            float(previous["High"]),
+
+        "previous_low":
+            float(previous["Low"]),
+
+        "previous_close":
+            float(previous["Close"]),
+
+        "previous_strat":
+            previous_strat,
+
+        "current_open":
+            float(current["Open"]),
+
+        "current_high":
+            float(current["High"]),
+
+        "current_low":
+            float(current["Low"]),
+
+        "current_close":
+            float(current["Close"]),
+
+        "current_strat":
+            current_strat,
+
+        "current_period":
+            current_period
+    }
+
+
+# ============================================================
+# CURRENT WEEK STRAT
+# ============================================================
+
+def get_current_week_strat(df):
+
+    levels = get_weekly_levels(df)
+
+    if levels is None:
+        return "N/A"
+
+    return levels["current_strat"]
 
 
 # ============================================================
 # FTFC
 # ============================================================
 
-def calculate_ftfc(
-
-    df,
-
-    weekly_levels
-):
+def calculate_ftfc(df):
 
     try:
 
-        current_price = float(
-
-            df[
-                "Close"
-            ]
-
-            .iloc[-1]
+        price = float(
+            df["Close"].iloc[-1]
         )
 
-        # ====================================================
-        # WEEKLY
-        # ====================================================
-
-        weekly_open = (
-
-            weekly_levels[
-                "current_week_open"
-            ]
+        current_week = (
+            df.index[-1]
+            .to_period("W-FRI")
         )
 
-        if (
-            current_price
-            > weekly_open
-        ):
+        week_data = df[
+            df.index.to_period("W-FRI")
+            == current_week
+        ]
 
-            weekly_ftfc = "Up"
+        weekly_open = float(
+            week_data["Open"].iloc[0]
+        )
 
-        elif (
-            current_price
-            < weekly_open
-        ):
-
-            weekly_ftfc = "Down"
-
+        if price > weekly_open:
+            weekly = "Up"
+        elif price < weekly_open:
+            weekly = "Down"
         else:
-
-            weekly_ftfc = "Neutral"
-
-        # ====================================================
-        # MONTHLY
-        # ====================================================
+            weekly = "Neutral"
 
         current_month = (
-
             df.index[-1]
-
-            .to_period(
-                "M"
-            )
+            .to_period("M")
         )
 
-        month_data = (
+        month_data = df[
+            df.index.to_period("M")
+            == current_month
+        ]
 
-            df[
-                df.index
-                .to_period(
-                    "M"
-                )
-                == current_month
-            ]
+        monthly_open = float(
+            month_data["Open"].iloc[0]
         )
 
-        if month_data.empty:
-
-            monthly_ftfc = "N/A"
-
-            monthly_open = None
-
+        if price > monthly_open:
+            monthly = "Up"
+        elif price < monthly_open:
+            monthly = "Down"
         else:
-
-            monthly_open = float(
-
-                month_data[
-                    "Open"
-                ]
-
-                .iloc[0]
-            )
-
-            if (
-                current_price
-                > monthly_open
-            ):
-
-                monthly_ftfc = "Up"
-
-            elif (
-                current_price
-                < monthly_open
-            ):
-
-                monthly_ftfc = "Down"
-
-            else:
-
-                monthly_ftfc = "Neutral"
-
-        # ====================================================
-        # M/W ALIGNMENT
-        # ====================================================
+            monthly = "Neutral"
 
         if (
-            weekly_ftfc
-            == "Up"
-
+            weekly == "Up"
             and
-
-            monthly_ftfc
-            == "Up"
+            monthly == "Up"
         ):
-
             alignment = "FTFC Up"
 
         elif (
-            weekly_ftfc
-            == "Down"
-
+            weekly == "Down"
             and
-
-            monthly_ftfc
-            == "Down"
+            monthly == "Down"
         ):
-
             alignment = "FTFC Down"
 
         else:
-
             alignment = "Mixed"
 
         return {
-
-            "weekly":
-                weekly_ftfc,
-
-            "monthly":
-                monthly_ftfc,
-
-            "alignment":
-                alignment,
-
-            "weekly_open":
-                weekly_open,
-
-            "monthly_open":
-                monthly_open
+            "weekly": weekly,
+            "monthly": monthly,
+            "alignment": alignment
         }
 
     except Exception:
 
         return {
-
-            "weekly":
-                "N/A",
-
-            "monthly":
-                "N/A",
-
-            "alignment":
-                "N/A",
-
-            "weekly_open":
-                None,
-
-            "monthly_open":
-                None
+            "weekly": "N/A",
+            "monthly": "N/A",
+            "alignment": "N/A"
         }
 
 
@@ -1812,453 +863,694 @@ def calculate_ftfc(
 # ============================================================
 
 def calculate_rvol(
-
     df,
-
     lookback=20
 ):
 
     try:
 
-        if len(df) < (
-            lookback
-            + 1
-        ):
-
+        if len(df) < lookback + 1:
             return None
 
-        current_volume = float(
-
-            df[
-                "Volume"
-            ]
-
-            .iloc[-1]
+        current = float(
+            df["Volume"].iloc[-1]
         )
 
-        average_volume = float(
-
-            df[
-                "Volume"
-            ]
-
-            .iloc[
-                -(lookback + 1):-1
-            ]
-
+        average = float(
+            df["Volume"]
+            .iloc[-(lookback + 1):-1]
             .mean()
         )
 
-        if average_volume <= 0:
-
+        if average <= 0:
             return None
 
-        return (
-            current_volume
-            / average_volume
-        )
+        return current / average
 
     except Exception:
-
         return None
 
 
 # ============================================================
-# MAIN SCANNER
+# WEEKLY ACTIONABLE SIGNAL HISTORY
+#
+# DAILY CANDLES AFTER PWL/PWH EVENT
 # ============================================================
 
-def scan_market(
+def find_weekly_actionable_signals(
+    df,
+    previous_high,
+    previous_low
+):
 
+    result = {
+        "low_taken_date": None,
+        "low_reclaim_date": None,
+        "high_taken_date": None,
+        "high_rejection_date": None,
+        "pre_signal": None,
+        "pre_date": None,
+        "pre_event": None,
+        "post_signal": None,
+        "post_date": None,
+        "post_event": None
+    }
+
+    current_period = (
+        df.index[-1]
+        .to_period("W-FRI")
+    )
+
+    current_data = df[
+        df.index.to_period("W-FRI")
+        == current_period
+    ]
+
+    low_taken = False
+    high_taken = False
+    low_reclaimed = False
+    high_rejected = False
+
+    low_taken_date = None
+    high_taken_date = None
+    low_reclaim_date = None
+    high_rejection_date = None
+
+    for date, row in current_data.iterrows():
+
+        o = float(row["Open"])
+        h = float(row["High"])
+        l = float(row["Low"])
+        c = float(row["Close"])
+
+        if (
+            not low_taken
+            and
+            l < previous_low
+        ):
+            low_taken = True
+            low_taken_date = date
+
+        if (
+            not high_taken
+            and
+            h > previous_high
+        ):
+            high_taken = True
+            high_taken_date = date
+
+        if (
+            low_taken
+            and
+            not low_reclaimed
+            and
+            c > previous_low
+        ):
+            low_reclaimed = True
+            low_reclaim_date = date
+
+        if (
+            high_taken
+            and
+            not high_rejected
+            and
+            c < previous_high
+        ):
+            high_rejected = True
+            high_rejection_date = date
+
+        location = df.index.get_loc(date)
+
+        if location == 0:
+            continue
+
+        previous_row = df.iloc[
+            location - 1
+        ]
+
+        actionable = classify_actionable_candle(
+            o,
+            h,
+            l,
+            c,
+            float(previous_row["High"]),
+            float(previous_row["Low"])
+        )
+
+        if actionable is None:
+            continue
+
+        # POST-CONFIRMATION
+
+        if result["post_signal"] is None:
+
+            candidates = []
+
+            if (
+                low_reclaimed
+                and
+                low_reclaim_date is not None
+                and
+                date >= low_reclaim_date
+            ):
+                candidates.append(
+                    (
+                        low_reclaim_date,
+                        "PWL Taken → Reclaimed"
+                    )
+                )
+
+            if (
+                high_rejected
+                and
+                high_rejection_date is not None
+                and
+                date >= high_rejection_date
+            ):
+                candidates.append(
+                    (
+                        high_rejection_date,
+                        "PWH Taken → Rejected"
+                    )
+                )
+
+            if candidates:
+
+                candidates.sort(
+                    key=lambda x: x[0]
+                )
+
+                result["post_signal"] = actionable
+
+                result["post_date"] = (
+                    date.strftime("%Y-%m-%d")
+                )
+
+                result["post_event"] = (
+                    candidates[0][1]
+                )
+
+        # PRE-CONFIRMATION
+
+        if result["pre_signal"] is None:
+
+            candidates = []
+
+            if (
+                low_taken
+                and
+                not low_reclaimed
+            ):
+                candidates.append(
+                    (
+                        low_taken_date,
+                        "PWL Taken → Not Yet Reclaimed"
+                    )
+                )
+
+            if (
+                high_taken
+                and
+                not high_rejected
+            ):
+                candidates.append(
+                    (
+                        high_taken_date,
+                        "PWH Taken → Not Yet Rejected"
+                    )
+                )
+
+            if candidates:
+
+                candidates.sort(
+                    key=lambda x: x[0]
+                )
+
+                result["pre_signal"] = actionable
+
+                result["pre_date"] = (
+                    date.strftime("%Y-%m-%d")
+                )
+
+                result["pre_event"] = (
+                    candidates[0][1]
+                )
+
+    result["low_taken_date"] = (
+        low_taken_date.strftime("%Y-%m-%d")
+        if low_taken_date is not None
+        else None
+    )
+
+    result["low_reclaim_date"] = (
+        low_reclaim_date.strftime("%Y-%m-%d")
+        if low_reclaim_date is not None
+        else None
+    )
+
+    result["high_taken_date"] = (
+        high_taken_date.strftime("%Y-%m-%d")
+        if high_taken_date is not None
+        else None
+    )
+
+    result["high_rejection_date"] = (
+        high_rejection_date.strftime("%Y-%m-%d")
+        if high_rejection_date is not None
+        else None
+    )
+
+    return result
+
+
+# ============================================================
+# MONTHLY ACTIONABLE SIGNAL HISTORY
+#
+# WEEKLY CANDLES AFTER PML/PMH EVENT
+# ============================================================
+
+def find_monthly_actionable_signals(
+    df,
+    previous_high,
+    previous_low
+):
+
+    result = {
+        "low_taken_date": None,
+        "low_reclaim_date": None,
+        "high_taken_date": None,
+        "high_rejection_date": None,
+        "pre_signal": None,
+        "pre_date": None,
+        "pre_event": None,
+        "post_signal": None,
+        "post_date": None,
+        "post_event": None
+    }
+
+    current_month = (
+        df.index[-1]
+        .to_period("M")
+    )
+
+    month_daily = df[
+        df.index.to_period("M")
+        == current_month
+    ]
+
+    if month_daily.empty:
+        return result
+
+    # ========================================================
+    # FIND DAILY DATES OF MONTHLY SWEEP / CONFIRMATION
+    # ========================================================
+
+    low_taken = False
+    high_taken = False
+    low_reclaimed = False
+    high_rejected = False
+
+    low_taken_date = None
+    high_taken_date = None
+    low_reclaim_date = None
+    high_rejection_date = None
+
+    for date, row in month_daily.iterrows():
+
+        h = float(row["High"])
+        l = float(row["Low"])
+        c = float(row["Close"])
+
+        if (
+            not low_taken
+            and
+            l < previous_low
+        ):
+            low_taken = True
+            low_taken_date = date
+
+        if (
+            not high_taken
+            and
+            h > previous_high
+        ):
+            high_taken = True
+            high_taken_date = date
+
+        if (
+            low_taken
+            and
+            not low_reclaimed
+            and
+            c > previous_low
+        ):
+            low_reclaimed = True
+            low_reclaim_date = date
+
+        if (
+            high_taken
+            and
+            not high_rejected
+            and
+            c < previous_high
+        ):
+            high_rejected = True
+            high_rejection_date = date
+
+    # ========================================================
+    # BUILD WEEKLY CANDLES
+    # ========================================================
+
+    weekly = build_weekly_dataframe(df)
+
+    monthly_weekly = weekly[
+        weekly.index.start_time.to_period("M")
+        == current_month
+    ].copy()
+
+    if monthly_weekly.empty:
+
+        monthly_weekly = weekly[
+            weekly.index.end_time.to_period("M")
+            == current_month
+        ].copy()
+
+    weekly_periods = list(weekly.index)
+
+    # ========================================================
+    # SEARCH WEEKLY ACTIONABLE CANDLES
+    # ========================================================
+
+    for period, row in monthly_weekly.iterrows():
+
+        try:
+
+            location = weekly_periods.index(
+                period
+            )
+
+        except ValueError:
+
+            continue
+
+        if location == 0:
+            continue
+
+        previous_row = weekly.iloc[
+            location - 1
+        ]
+
+        actionable = classify_actionable_candle(
+            float(row["Open"]),
+            float(row["High"]),
+            float(row["Low"]),
+            float(row["Close"]),
+            float(previous_row["High"]),
+            float(previous_row["Low"])
+        )
+
+        if actionable is None:
+            continue
+
+        week_start = period.start_time
+        week_end = period.end_time
+
+        # ====================================================
+        # POST-CONFIRMATION
+        # ====================================================
+
+        if result["post_signal"] is None:
+
+            candidates = []
+
+            if (
+                low_reclaim_date is not None
+                and
+                week_end >= low_reclaim_date
+            ):
+
+                candidates.append(
+                    (
+                        low_reclaim_date,
+                        "PML Taken → Reclaimed"
+                    )
+                )
+
+            if (
+                high_rejection_date is not None
+                and
+                week_end >= high_rejection_date
+            ):
+
+                candidates.append(
+                    (
+                        high_rejection_date,
+                        "PMH Taken → Rejected"
+                    )
+                )
+
+            if candidates:
+
+                candidates.sort(
+                    key=lambda x: x[0]
+                )
+
+                result["post_signal"] = actionable
+
+                result["post_date"] = (
+                    week_end.strftime(
+                        "%Y-%m-%d"
+                    )
+                )
+
+                result["post_event"] = (
+                    candidates[0][1]
+                )
+
+        # ====================================================
+        # PRE-CONFIRMATION
+        # ====================================================
+
+        if result["pre_signal"] is None:
+
+            candidates = []
+
+            if (
+                low_taken_date is not None
+                and
+                (
+                    low_reclaim_date is None
+                    or
+                    week_start < low_reclaim_date
+                )
+                and
+                week_end >= low_taken_date
+            ):
+
+                candidates.append(
+                    (
+                        low_taken_date,
+                        "PML Taken → Not Yet Reclaimed"
+                    )
+                )
+
+            if (
+                high_taken_date is not None
+                and
+                (
+                    high_rejection_date is None
+                    or
+                    week_start < high_rejection_date
+                )
+                and
+                week_end >= high_taken_date
+            ):
+
+                candidates.append(
+                    (
+                        high_taken_date,
+                        "PMH Taken → Not Yet Rejected"
+                    )
+                )
+
+            if candidates:
+
+                candidates.sort(
+                    key=lambda x: x[0]
+                )
+
+                result["pre_signal"] = actionable
+
+                result["pre_date"] = (
+                    week_end.strftime(
+                        "%Y-%m-%d"
+                    )
+                )
+
+                result["pre_event"] = (
+                    candidates[0][1]
+                )
+
+    result["low_taken_date"] = (
+        low_taken_date.strftime("%Y-%m-%d")
+        if low_taken_date is not None
+        else None
+    )
+
+    result["low_reclaim_date"] = (
+        low_reclaim_date.strftime("%Y-%m-%d")
+        if low_reclaim_date is not None
+        else None
+    )
+
+    result["high_taken_date"] = (
+        high_taken_date.strftime("%Y-%m-%d")
+        if high_taken_date is not None
+        else None
+    )
+
+    result["high_rejection_date"] = (
+        high_rejection_date.strftime("%Y-%m-%d")
+        if high_rejection_date is not None
+        else None
+    )
+
+    return result
+
+
+# ============================================================
+# WEEKLY SCANNER
+# ============================================================
+
+def scan_weekly(
     tickers,
-
     market_data
 ):
 
-    results = []
+    rows = []
 
-    # ========================================================
-    # FINAL DUPLICATE PROTECTION
-    # ========================================================
+    tickers = sorted(set(tickers))
 
-    tickers = sorted(
-        set(tickers)
-    )
-
-    total = len(
-        tickers
-    )
-
-    progress = (
-        st.progress(0)
-    )
-
-    status = (
-        st.empty()
-    )
-
-    # ========================================================
-    # BULLISH DAILY PATTERNS
-    # ========================================================
-
-    bullish_daily_patterns = [
-
+    bullish_patterns = [
         "2U Green",
-
         "2D Green",
-
         "2U Red",
-
         "1 Inside",
-
         "3 Outside"
     ]
 
-    # ========================================================
-    # BEARISH DAILY PATTERNS
-    # ========================================================
-
-    bearish_daily_patterns = [
-
+    bearish_patterns = [
         "2D Red",
-
         "2U Red",
-
         "2D Green",
-
         "1 Inside",
-
         "3 Outside"
     ]
 
-    # ========================================================
-    # SCAN
-    # ========================================================
+    progress = st.progress(0)
 
-    for (
-        index,
-        ticker
-    ) in enumerate(
-        tickers
-    ):
+    status = st.empty()
+
+    total = len(tickers)
+
+    for i, ticker in enumerate(tickers):
 
         status.text(
-
-            f"Scanning {ticker} "
-            f"({index + 1}/{total})"
+            f"Weekly scan: {ticker} "
+            f"({i + 1}/{total})"
         )
 
         try:
 
-            df = (
-
-                clean_ticker_dataframe(
-
-                    market_data,
-
-                    ticker
-                )
+            df = clean_ticker_dataframe(
+                market_data,
+                ticker
             )
 
-            if (
-                df is None
-
-                or
-
-                len(df) < 30
-            ):
-
-                progress.progress(
-                    (
-                        index + 1
-                    )
-                    / total
-                )
-
+            if df is None or len(df) < 30:
                 continue
 
-            levels = (
-                get_weekly_levels(
-                    df
-                )
-            )
+            levels = get_weekly_levels(df)
 
             if levels is None:
-
-                progress.progress(
-                    (
-                        index + 1
-                    )
-                    / total
-                )
-
                 continue
 
-            # =================================================
-            # WEEKLY LEVELS
-            # =================================================
-
-            previous_week_high = (
-
-                levels[
-                    "previous_week_high"
-                ]
-            )
-
-            previous_week_low = (
-
-                levels[
-                    "previous_week_low"
-                ]
-            )
-
-            previous_week_strat = (
-
-                levels[
-                    "previous_week_strat"
-                ]
-            )
-
-            current_week_high = (
-
-                levels[
-                    "current_week_high"
-                ]
-            )
-
-            current_week_low = (
-
-                levels[
-                    "current_week_low"
-                ]
-            )
-
-            current_week_strat = (
-
-                levels[
-                    "current_week_strat"
-                ]
-            )
+            pwh = levels["previous_high"]
+            pwl = levels["previous_low"]
 
             current_price = float(
-
-                df[
-                    "Close"
-                ]
-
-                .iloc[-1]
-            )
-
-            # =================================================
-            # TAKEN
-            # =================================================
-
-            high_taken = (
-
-                current_week_high
-
-                > previous_week_high
+                df["Close"].iloc[-1]
             )
 
             low_taken = (
-
-                current_week_low
-
-                < previous_week_low
+                levels["current_low"] < pwl
             )
 
-            # =================================================
-            # CURRENT STATUS
-            # =================================================
-
-            low_reclaimed = (
-
-                low_taken
-
-                and
-
-                current_price
-                > previous_week_low
+            high_taken = (
+                levels["current_high"] > pwh
             )
-
-            high_rejected = (
-
-                high_taken
-
-                and
-
-                current_price
-                < previous_week_high
-            )
-
-            # =================================================
-            # ACTIONABLE SIGNAL HISTORY
-            # =================================================
-
-            actionable = (
-
-                find_actionable_signals(
-
-                    df,
-
-                    previous_week_high,
-
-                    previous_week_low
-                )
-            )
-
-            # =================================================
-            # DAILY STRAT
-            # =================================================
-
-            daily_strat = (
-                get_daily_strat(
-                    df
-                )
-            )
-
-            # =================================================
-            # FTFC
-            # =================================================
-
-            ftfc = (
-
-                calculate_ftfc(
-
-                    df,
-
-                    levels
-                )
-            )
-
-            # =================================================
-            # RVOL
-            # =================================================
-
-            rvol = (
-                calculate_rvol(
-                    df
-                )
-            )
-
-            # =================================================
-            # DISTANCE
-            # =================================================
-
-            pct_from_low = (
-
-                (
-                    current_price
-
-                    - previous_week_low
-                )
-
-                / previous_week_low
-
-            ) * 100
-
-            pct_from_high = (
-
-                (
-                    current_price
-
-                    - previous_week_high
-                )
-
-                / previous_week_high
-
-            ) * 100
-
-            # =================================================
-            # BULLISH SETUP
-            # =================================================
-
-            bullish_setup = (
-
-                low_taken
-
-                and
-
-                low_reclaimed
-
-                and
-
-                daily_strat
-                in bullish_daily_patterns
-
-                and
-
-                ftfc[
-                    "weekly"
-                ]
-                == "Up"
-            )
-
-            # =================================================
-            # BEARISH SETUP
-            # =================================================
-
-            bearish_setup = (
-
-                high_taken
-
-                and
-
-                high_rejected
-
-                and
-
-                daily_strat
-                in bearish_daily_patterns
-
-                and
-
-                ftfc[
-                    "weekly"
-                ]
-                == "Down"
-            )
-
-            # =================================================
-            # ONLY RETURN STOCKS THAT TOOK A WEEKLY LEVEL
-            # =================================================
 
             if not (
                 low_taken
-
                 or
-
                 high_taken
             ):
-
-                progress.progress(
-                    (
-                        index + 1
-                    )
-                    / total
-                )
-
                 continue
 
-            # =================================================
-            # SIGNAL
-            # =================================================
+            low_reclaimed = (
+                low_taken
+                and
+                current_price > pwl
+            )
 
-            if bullish_setup:
+            high_rejected = (
+                high_taken
+                and
+                current_price < pwh
+            )
+
+            daily_strat = get_daily_strat(df)
+
+            ftfc = calculate_ftfc(df)
+
+            rvol = calculate_rvol(df)
+
+            actionable = (
+                find_weekly_actionable_signals(
+                    df,
+                    pwh,
+                    pwl
+                )
+            )
+
+            bullish = (
+                low_reclaimed
+                and
+                daily_strat in bullish_patterns
+                and
+                ftfc["weekly"] == "Up"
+            )
+
+            bearish = (
+                high_rejected
+                and
+                daily_strat in bearish_patterns
+                and
+                ftfc["weekly"] == "Down"
+            )
+
+            if bullish:
 
                 signal = (
-
-                    f"PWL Taken → "
-                    f"Reclaimed → "
+                    f"PWL Taken → Reclaimed → "
                     f"Daily {daily_strat} → "
                     f"Weekly FTFC Up"
                 )
 
-            elif bearish_setup:
+            elif bearish:
 
                 signal = (
-
-                    f"PWH Taken → "
-                    f"Rejected → "
+                    f"PWH Taken → Rejected → "
                     f"Daily {daily_strat} → "
                     f"Weekly FTFC Down"
                 )
@@ -2297,62 +1589,25 @@ def scan_market(
                     "Previous Week High Taken"
                 )
 
-            # =================================================
-            # RESULT
-            # =================================================
-
-            results.append({
+            rows.append({
 
                 "Ticker":
                     ticker,
 
                 "Price":
-                    round(
-                        current_price,
-                        2
-                    ),
-
-                # =============================================
-                # PREVIOUS WEEK
-                # =============================================
+                    round(current_price, 2),
 
                 "Prev Week Low":
-                    round(
-                        previous_week_low,
-                        2
-                    ),
+                    round(pwl, 2),
 
                 "Prev Week High":
-                    round(
-                        previous_week_high,
-                        2
-                    ),
+                    round(pwh, 2),
 
                 "Prev Week STRAT":
-                    previous_week_strat,
-
-                # =============================================
-                # CURRENT WEEK
-                # =============================================
-
-                "Current Week Low":
-                    round(
-                        current_week_low,
-                        2
-                    ),
-
-                "Current Week High":
-                    round(
-                        current_week_high,
-                        2
-                    ),
+                    levels["previous_strat"],
 
                 "Current Week STRAT":
-                    current_week_strat,
-
-                # =============================================
-                # LOW
-                # =============================================
+                    levels["current_strat"],
 
                 "Low Taken":
                     low_taken,
@@ -2370,10 +1625,6 @@ def scan_market(
                         "low_reclaim_date"
                     ],
 
-                # =============================================
-                # HIGH
-                # =============================================
-
                 "High Taken":
                     high_taken,
 
@@ -2390,150 +1641,417 @@ def scan_market(
                         "high_rejection_date"
                     ],
 
-                # =============================================
-                # CATEGORY 2
-                #
-                # PRE-CONFIRMATION
-                # =============================================
-
                 "First Pre-Confirmation Signal":
-                    actionable[
-                        "pre_signal"
-                    ],
+                    actionable["pre_signal"],
 
                 "Pre-Confirmation Date":
-                    actionable[
-                        "pre_date"
-                    ],
+                    actionable["pre_date"],
 
                 "Pre-Confirmation Event":
-                    actionable[
-                        "pre_event"
-                    ],
-
-                # =============================================
-                # CATEGORY 1
-                #
-                # POST-CONFIRMATION
-                # =============================================
+                    actionable["pre_event"],
 
                 "First Post-Confirmation Signal":
-                    actionable[
-                        "post_signal"
-                    ],
+                    actionable["post_signal"],
 
                 "Post-Confirmation Date":
-                    actionable[
-                        "post_date"
-                    ],
+                    actionable["post_date"],
 
                 "Post-Confirmation Event":
-                    actionable[
-                        "post_event"
-                    ],
-
-                # =============================================
-                # DAILY
-                # =============================================
+                    actionable["post_event"],
 
                 "Daily STRAT":
                     daily_strat,
 
-                # =============================================
-                # FTFC
-                # =============================================
-
                 "Weekly FTFC":
-                    ftfc[
-                        "weekly"
-                    ],
+                    ftfc["weekly"],
 
                 "Monthly FTFC":
-                    ftfc[
-                        "monthly"
-                    ],
+                    ftfc["monthly"],
 
                 "FTFC":
-                    ftfc[
-                        "alignment"
-                    ],
-
-                # =============================================
-                # VOLUME
-                # =============================================
+                    ftfc["alignment"],
 
                 "RVOL":
-                    (
-                        round(
-                            rvol,
-                            2
-                        )
-
-                        if rvol
-                        is not None
-
-                        else None
-                    ),
-
-                # =============================================
-                # DISTANCE
-                # =============================================
+                    round(rvol, 2)
+                    if rvol is not None
+                    else None,
 
                 "% From PWL":
                     round(
-                        pct_from_low,
+                        (
+                            (
+                                current_price
+                                - pwl
+                            )
+                            / pwl
+                        )
+                        * 100,
                         2
                     ),
 
                 "% From PWH":
                     round(
-                        pct_from_high,
+                        (
+                            (
+                                current_price
+                                - pwh
+                            )
+                            / pwh
+                        )
+                        * 100,
                         2
                     ),
 
-                # =============================================
-                # SETUPS
-                # =============================================
-
                 "Bullish Setup":
-                    bullish_setup,
+                    bullish,
 
                 "Bearish Setup":
-                    bearish_setup,
+                    bearish,
 
                 "Signal":
                     signal
             })
 
         except Exception:
-
             pass
 
-        progress.progress(
-            (
-                index + 1
+        finally:
+
+            progress.progress(
+                (i + 1) / total
             )
-            / total
-        )
 
     progress.empty()
-
     status.empty()
 
-    return (
-        pd.DataFrame(
-            results
+    return pd.DataFrame(rows)
+
+
+# ============================================================
+# MONTHLY SCANNER
+# ============================================================
+
+def scan_monthly(
+    tickers,
+    market_data
+):
+
+    rows = []
+
+    tickers = sorted(set(tickers))
+
+    # Weekly STRAT patterns accepted after monthly sweep
+
+    bullish_patterns = [
+        "2U Green",
+        "2D Green",
+        "2U Red",
+        "1 Inside",
+        "3 Outside"
+    ]
+
+    bearish_patterns = [
+        "2D Red",
+        "2U Red",
+        "2D Green",
+        "1 Inside",
+        "3 Outside"
+    ]
+
+    progress = st.progress(0)
+
+    status = st.empty()
+
+    total = len(tickers)
+
+    for i, ticker in enumerate(tickers):
+
+        status.text(
+            f"Monthly scan: {ticker} "
+            f"({i + 1}/{total})"
         )
-    )
 
+        try:
 
-# ============================================================
-# SIDEBAR
-# ============================================================
+            df = clean_ticker_dataframe(
+                market_data,
+                ticker
+            )
 
-st.sidebar.header(
-    "⚙️ Scanner Settings"
-)
+            if df is None or len(df) < 60:
+                continue
+
+            levels = get_monthly_levels(df)
+
+            if levels is None:
+                continue
+
+            pmh = levels["previous_high"]
+            pml = levels["previous_low"]
+
+            current_price = float(
+                df["Close"].iloc[-1]
+            )
+
+            low_taken = (
+                levels["current_low"] < pml
+            )
+
+            high_taken = (
+                levels["current_high"] > pmh
+            )
+
+            if not (
+                low_taken
+                or
+                high_taken
+            ):
+                continue
+
+            low_reclaimed = (
+                low_taken
+                and
+                current_price > pml
+            )
+
+            high_rejected = (
+                high_taken
+                and
+                current_price < pmh
+            )
+
+            weekly_strat = (
+                get_current_week_strat(df)
+            )
+
+            ftfc = calculate_ftfc(df)
+
+            rvol = calculate_rvol(df)
+
+            actionable = (
+                find_monthly_actionable_signals(
+                    df,
+                    pmh,
+                    pml
+                )
+            )
+
+            bullish = (
+                low_reclaimed
+                and
+                weekly_strat
+                in bullish_patterns
+                and
+                ftfc["monthly"] == "Up"
+            )
+
+            bearish = (
+                high_rejected
+                and
+                weekly_strat
+                in bearish_patterns
+                and
+                ftfc["monthly"] == "Down"
+            )
+
+            if bullish:
+
+                signal = (
+                    f"PML Taken → Reclaimed → "
+                    f"Weekly {weekly_strat} → "
+                    f"Monthly FTFC Up"
+                )
+
+            elif bearish:
+
+                signal = (
+                    f"PMH Taken → Rejected → "
+                    f"Weekly {weekly_strat} → "
+                    f"Monthly FTFC Down"
+                )
+
+            elif (
+                low_taken
+                and
+                high_taken
+            ):
+
+                signal = (
+                    "Both Monthly Levels Taken"
+                )
+
+            elif low_reclaimed:
+
+                signal = (
+                    "PML Taken → Reclaimed"
+                )
+
+            elif high_rejected:
+
+                signal = (
+                    "PMH Taken → Rejected"
+                )
+
+            elif low_taken:
+
+                signal = (
+                    "Previous Month Low Taken"
+                )
+
+            else:
+
+                signal = (
+                    "Previous Month High Taken"
+                )
+
+            rows.append({
+
+                "Ticker":
+                    ticker,
+
+                "Price":
+                    round(current_price, 2),
+
+                "Prev Month Low":
+                    round(pml, 2),
+
+                "Prev Month High":
+                    round(pmh, 2),
+
+                "Prev Month STRAT":
+                    levels["previous_strat"],
+
+                "Current Month Low":
+                    round(
+                        levels["current_low"],
+                        2
+                    ),
+
+                "Current Month High":
+                    round(
+                        levels["current_high"],
+                        2
+                    ),
+
+                "Current Month STRAT":
+                    levels["current_strat"],
+
+                "Low Taken":
+                    low_taken,
+
+                "PML Sweep Date":
+                    actionable[
+                        "low_taken_date"
+                    ],
+
+                "Low Reclaimed":
+                    low_reclaimed,
+
+                "PML Reclaim Date":
+                    actionable[
+                        "low_reclaim_date"
+                    ],
+
+                "High Taken":
+                    high_taken,
+
+                "PMH Sweep Date":
+                    actionable[
+                        "high_taken_date"
+                    ],
+
+                "High Rejected":
+                    high_rejected,
+
+                "PMH Rejection Date":
+                    actionable[
+                        "high_rejection_date"
+                    ],
+
+                "First Pre-Confirmation Weekly Signal":
+                    actionable["pre_signal"],
+
+                "Pre-Confirmation Week":
+                    actionable["pre_date"],
+
+                "Pre-Confirmation Event":
+                    actionable["pre_event"],
+
+                "First Post-Confirmation Weekly Signal":
+                    actionable["post_signal"],
+
+                "Post-Confirmation Week":
+                    actionable["post_date"],
+
+                "Post-Confirmation Event":
+                    actionable["post_event"],
+
+                "Current Week STRAT":
+                    weekly_strat,
+
+                "Weekly FTFC":
+                    ftfc["weekly"],
+
+                "Monthly FTFC":
+                    ftfc["monthly"],
+
+                "FTFC":
+                    ftfc["alignment"],
+
+                "RVOL":
+                    round(rvol, 2)
+                    if rvol is not None
+                    else None,
+
+                "% From PML":
+                    round(
+                        (
+                            (
+                                current_price
+                                - pml
+                            )
+                            / pml
+                        )
+                        * 100,
+                        2
+                    ),
+
+                "% From PMH":
+                    round(
+                        (
+                            (
+                                current_price
+                                - pmh
+                            )
+                            / pmh
+                        )
+                        * 100,
+                        2
+                    ),
+
+                "Bullish Setup":
+                    bullish,
+
+                "Bearish Setup":
+                    bearish,
+
+                "Signal":
+                    signal
+            })
+
+        except Exception:
+            pass
+
+        finally:
+
+            progress.progress(
+                (i + 1) / total
+            )
+
+    progress.empty()
+    status.empty()
+
+    return pd.DataFrame(rows)
 
 
 # ============================================================
@@ -2541,12 +2059,10 @@ st.sidebar.header(
 # ============================================================
 
 with st.spinner(
-    "Loading stock universes..."
+    "Loading market universes..."
 ):
 
-    sp500_tickers = (
-        get_sp500_tickers()
-    )
+    sp500_tickers = get_sp500_tickers()
 
     nasdaq100_tickers = (
         get_nasdaq100_tickers()
@@ -2554,358 +2070,85 @@ with st.spinner(
 
 
 # ============================================================
-# COMBINE + REMOVE DUPLICATES
+# REMOVE DUPLICATES
 # ============================================================
 
 combined_tickers = sorted(
-
     set(
-
         sp500_tickers
-
         +
-
         nasdaq100_tickers
     )
 )
-
 
 duplicate_count = (
-
-    len(
-        sp500_tickers
-    )
-
+    len(sp500_tickers)
     +
-
-    len(
-        nasdaq100_tickers
-    )
-
+    len(nasdaq100_tickers)
     -
-
-    len(
-        combined_tickers
-    )
+    len(combined_tickers)
 )
 
 
 # ============================================================
-# MARKET UNIVERSE
+# SIDEBAR
 # ============================================================
 
-universe = (
-
-    st.sidebar.selectbox(
-
-        "Market Universe",
-
-        [
-
-            "S&P 500 + Nasdaq-100",
-
-            "S&P 500",
-
-            "Nasdaq-100",
-
-            "Custom Watchlist"
-        ]
-    )
+st.sidebar.header(
+    "⚙️ Market Settings"
 )
 
+universe = st.sidebar.selectbox(
+    "Market Universe",
+    [
+        "S&P 500 + Nasdaq-100",
+        "S&P 500",
+        "Nasdaq-100",
+        "Custom Watchlist"
+    ]
+)
 
-# ============================================================
-# SELECT TICKERS
-# ============================================================
-
-if (
-    universe
-    == "S&P 500 + Nasdaq-100"
-):
+if universe == "S&P 500 + Nasdaq-100":
 
     selected_tickers = (
         combined_tickers
     )
 
-
-elif (
-    universe
-    == "S&P 500"
-):
+elif universe == "S&P 500":
 
     selected_tickers = (
         sp500_tickers
     )
 
-
-elif (
-    universe
-    == "Nasdaq-100"
-):
+elif universe == "Nasdaq-100":
 
     selected_tickers = (
         nasdaq100_tickers
     )
-
 
 else:
 
-    custom_input = (
-
-        st.sidebar.text_area(
-
-            "Enter tickers",
-
-            value=(
-                "AAPL,MSFT,NVDA,"
-                "AMD,TSLA,AMZN,META"
-            ),
-
-            help=(
-                "Separate ticker symbols "
-                "with commas."
-            )
+    custom = st.sidebar.text_area(
+        "Custom Tickers",
+        value=(
+            "AAPL,MSFT,NVDA,"
+            "AMD,TSLA,AMZN,META"
         )
     )
-
-    selected_tickers = [
-
-        ticker
-        .strip()
-        .upper()
-        .replace(
-            ".",
-            "-"
-        )
-
-        for ticker
-        in custom_input.split(",")
-
-        if ticker.strip()
-    ]
-
-    # ========================================================
-    # REMOVE CUSTOM DUPLICATES
-    # ========================================================
 
     selected_tickers = sorted(
         set(
-            selected_tickers
+            ticker
+            .strip()
+            .upper()
+            .replace(".", "-")
+
+            for ticker
+            in custom.split(",")
+
+            if ticker.strip()
         )
     )
-
-
-# ============================================================
-# WEEKLY SIGNAL
-# ============================================================
-
-signal_filter = (
-
-    st.sidebar.selectbox(
-
-        "Weekly Signal",
-
-        [
-
-            "All Sweeps",
-
-            "Previous Week Low Taken",
-
-            "Previous Week High Taken",
-
-            "Low Taken + Reclaimed",
-
-            "High Taken + Rejected",
-
-            "Both Weekly Levels Taken",
-
-            "Bullish STRAT Setup",
-
-            "Bearish STRAT Setup"
-        ]
-    )
-)
-
-
-# ============================================================
-# PREVIOUS WEEK STRAT
-# ============================================================
-
-prev_week_strat_filter = (
-
-    st.sidebar.selectbox(
-
-        "Previous Week STRAT",
-
-        [
-
-            "All",
-
-            "1 Inside",
-
-            "2U Green",
-
-            "2U Red",
-
-            "2D Green",
-
-            "2D Red",
-
-            "3 Outside"
-        ]
-    )
-)
-
-
-# ============================================================
-# CURRENT WEEK STRAT
-# ============================================================
-
-current_week_strat_filter = (
-
-    st.sidebar.selectbox(
-
-        "Current Week STRAT",
-
-        [
-
-            "All",
-
-            "1 Inside",
-
-            "2U Green",
-
-            "2U Red",
-
-            "2D Green",
-
-            "2D Red",
-
-            "3 Outside"
-        ]
-    )
-)
-
-
-# ============================================================
-# DAILY STRAT
-# ============================================================
-
-daily_strat_filter = (
-
-    st.sidebar.selectbox(
-
-        "Daily STRAT",
-
-        [
-
-            "All",
-
-            "1 Inside",
-
-            "2U Green",
-
-            "2U Red",
-
-            "2D Green",
-
-            "2D Red",
-
-            "3 Outside"
-        ]
-    )
-)
-
-
-# ============================================================
-# ACTIONABLE SIGNAL
-# ============================================================
-
-actionable_filter = (
-
-    st.sidebar.selectbox(
-
-        "Actionable Signal",
-
-        [
-
-            "All",
-
-            "Hammer",
-
-            "Shooting Star",
-
-            "Inside Bar"
-        ]
-    )
-)
-
-
-# ============================================================
-# ACTIONABLE CATEGORY
-# ============================================================
-
-actionable_category_filter = (
-
-    st.sidebar.selectbox(
-
-        "Actionable Category",
-
-        [
-
-            "All",
-
-            "Pre-Confirmation",
-
-            "Post-Confirmation"
-        ]
-    )
-)
-
-
-# ============================================================
-# FTFC
-# ============================================================
-
-ftfc_filter = (
-
-    st.sidebar.selectbox(
-
-        "M/W FTFC",
-
-        [
-
-            "All",
-
-            "FTFC Up",
-
-            "FTFC Down",
-
-            "Mixed"
-        ]
-    )
-)
-
-
-# ============================================================
-# RVOL
-# ============================================================
-
-minimum_rvol = (
-
-    st.sidebar.number_input(
-
-        "Minimum RVOL",
-
-        min_value=0.0,
-
-        max_value=10.0,
-
-        value=0.0,
-
-        step=0.1
-    )
-)
 
 
 # ============================================================
@@ -2918,1027 +2161,1032 @@ st.sidebar.caption(
     "Universe Statistics"
 )
 
-stat1, stat2 = (
-    st.sidebar.columns(2)
-)
+u1, u2 = st.sidebar.columns(2)
 
-stat1.metric(
+u1.metric(
     "S&P 500",
-    len(
-        sp500_tickers
-    )
+    len(sp500_tickers)
 )
 
-stat2.metric(
+u2.metric(
     "Nasdaq-100",
-    len(
-        nasdaq100_tickers
-    )
+    len(nasdaq100_tickers)
 )
 
-stat3, stat4 = (
-    st.sidebar.columns(2)
-)
+u3, u4 = st.sidebar.columns(2)
 
-stat3.metric(
-    "Duplicates Removed",
+u3.metric(
+    "Duplicates",
     duplicate_count
 )
 
-stat4.metric(
-    "Combined Unique",
-    len(
-        combined_tickers
-    )
+u4.metric(
+    "Unique",
+    len(combined_tickers)
 )
 
 st.sidebar.metric(
-    "Stocks to Scan",
-    len(
-        selected_tickers
-    )
+    "Stocks Selected",
+    len(selected_tickers)
 )
 
 
 # ============================================================
-# RUN
+# SESSION STATE
 # ============================================================
 
-run_scan = (
+if "market_data" not in st.session_state:
 
-    st.sidebar.button(
+    st.session_state.market_data = None
 
-        "🚀 Scan Market",
+if "loaded_universe" not in st.session_state:
 
-        type="primary",
+    st.session_state.loaded_universe = None
 
-        use_container_width=True
-    )
+
+# ============================================================
+# DOWNLOAD BUTTON
+# ============================================================
+
+load_market = st.sidebar.button(
+    "📥 Load Market Data",
+    type="primary",
+    use_container_width=True
 )
 
 
-# ============================================================
-# RUN SCANNER
-# ============================================================
-
-if run_scan:
-
-    if not selected_tickers:
-
-        st.error(
-            "No ticker symbols available."
-        )
-
-        st.stop()
-
-    # ========================================================
-    # DOWNLOAD
-    # ========================================================
+if load_market:
 
     with st.spinner(
-
-        f"Downloading market data for "
-        f"{len(selected_tickers)} "
-        f"unique stocks..."
+        f"Downloading 1 year of data for "
+        f"{len(selected_tickers)} stocks..."
     ):
 
-        market_data = (
-
+        st.session_state.market_data = (
             download_market_data(
                 selected_tickers
             )
         )
 
-    if not market_data:
-
-        st.error(
-            "Yahoo Finance did not return market data."
+        st.session_state.loaded_universe = (
+            tuple(selected_tickers)
         )
 
-        st.stop()
+
+# ============================================================
+# CHECK WHETHER UNIVERSE CHANGED
+# ============================================================
+
+market_ready = (
+    st.session_state.market_data
+    is not None
+    and
+    st.session_state.loaded_universe
+    == tuple(selected_tickers)
+)
+
+
+if not market_ready:
+
+    st.info(
+        "Select your market universe and click "
+        "**Load Market Data**. The same download is then "
+        "used by both the Weekly and Monthly scanner tabs."
+    )
+
+
+# ============================================================
+# TABS
+# ============================================================
+
+weekly_tab, monthly_tab = st.tabs(
+    [
+        "📅 Weekly Scanner",
+        "🗓️ Monthly Scanner"
+    ]
+)
+
+
+# ============================================================
+# WEEKLY TAB
+# ============================================================
+
+with weekly_tab:
+
+    st.header(
+        "📅 Weekly Sweep Scanner"
+    )
 
     st.caption(
-
-        f"Downloaded "
-        f"{len(market_data)} / "
-        f"{len(selected_tickers)} "
-        f"unique symbols."
+        "Previous Week High/Low → "
+        "Sweep → Reclaim/Reject → "
+        "Daily STRAT → Weekly FTFC"
     )
 
     # ========================================================
-    # SCAN
+    # WEEKLY FILTERS
     # ========================================================
 
-    results = (
+    w1, w2, w3, w4 = st.columns(4)
 
-        scan_market(
-
-            selected_tickers,
-
-            market_data
+    weekly_signal_filter = (
+        w1.selectbox(
+            "Weekly Signal",
+            [
+                "All Sweeps",
+                "PWL Taken",
+                "PWH Taken",
+                "PWL Reclaimed",
+                "PWH Rejected",
+                "Bullish Setup",
+                "Bearish Setup"
+            ],
+            key="weekly_signal_filter"
         )
     )
 
-    # ========================================================
-    # FILTER RESULTS
-    # ========================================================
+    weekly_strat_filter = (
+        w2.selectbox(
+            "Current Week STRAT",
+            [
+                "All",
+                "1 Inside",
+                "2U Green",
+                "2U Red",
+                "2D Green",
+                "2D Red",
+                "3 Outside"
+            ],
+            key="weekly_strat_filter"
+        )
+    )
 
-    if not results.empty:
+    daily_filter = (
+        w3.selectbox(
+            "Daily STRAT",
+            [
+                "All",
+                "1 Inside",
+                "2U Green",
+                "2U Red",
+                "2D Green",
+                "2D Red",
+                "3 Outside"
+            ],
+            key="daily_filter"
+        )
+    )
 
-        # ====================================================
-        # WEEKLY SIGNAL
-        # ====================================================
+    weekly_actionable_filter = (
+        w4.selectbox(
+            "Actionable Candle",
+            [
+                "All",
+                "Hammer",
+                "Shooting Star",
+                "Inside Bar"
+            ],
+            key="weekly_actionable_filter"
+        )
+    )
 
-        if (
-            signal_filter
-            == "Previous Week Low Taken"
-        ):
+    w5, w6 = st.columns(2)
 
-            results = (
+    weekly_actionable_category = (
+        w5.selectbox(
+            "Actionable Category",
+            [
+                "All",
+                "Pre-Confirmation",
+                "Post-Confirmation"
+            ],
+            key="weekly_category"
+        )
+    )
 
-                results[
-                    results[
-                        "Low Taken"
-                    ]
-                ]
+    weekly_min_rvol = (
+        w6.number_input(
+            "Minimum RVOL",
+            min_value=0.0,
+            max_value=10.0,
+            value=0.0,
+            step=0.1,
+            key="weekly_rvol"
+        )
+    )
+
+    run_weekly = st.button(
+        "🚀 Run Weekly Scanner",
+        type="primary",
+        use_container_width=True,
+        key="run_weekly"
+    )
+
+    if run_weekly:
+
+        if not market_ready:
+
+            st.warning(
+                "Load market data first."
             )
 
-        elif (
-            signal_filter
-            == "Previous Week High Taken"
-        ):
+        else:
 
-            results = (
-
-                results[
-                    results[
-                        "High Taken"
-                    ]
-                ]
+            weekly_results = scan_weekly(
+                selected_tickers,
+                st.session_state.market_data
             )
 
-        elif (
-            signal_filter
-            == "Low Taken + Reclaimed"
-        ):
+            if not weekly_results.empty:
 
-            results = (
+                if (
+                    weekly_signal_filter
+                    == "PWL Taken"
+                ):
 
-                results[
-                    results[
-                        "Low Reclaimed"
-                    ]
-                ]
-            )
-
-        elif (
-            signal_filter
-            == "High Taken + Rejected"
-        ):
-
-            results = (
-
-                results[
-                    results[
-                        "High Rejected"
-                    ]
-                ]
-            )
-
-        elif (
-            signal_filter
-            == "Both Weekly Levels Taken"
-        ):
-
-            results = (
-
-                results[
-
-                    results[
-                        "Low Taken"
-                    ]
-
-                    &
-
-                    results[
-                        "High Taken"
-                    ]
-                ]
-            )
-
-        elif (
-            signal_filter
-            == "Bullish STRAT Setup"
-        ):
-
-            results = (
-
-                results[
-                    results[
-                        "Bullish Setup"
-                    ]
-                ]
-            )
-
-        elif (
-            signal_filter
-            == "Bearish STRAT Setup"
-        ):
-
-            results = (
-
-                results[
-                    results[
-                        "Bearish Setup"
-                    ]
-                ]
-            )
-
-        # ====================================================
-        # PREVIOUS WEEK STRAT
-        # ====================================================
-
-        if (
-            prev_week_strat_filter
-            != "All"
-        ):
-
-            results = (
-
-                results[
-                    results[
-                        "Prev Week STRAT"
-                    ]
-                    == prev_week_strat_filter
-                ]
-            )
-
-        # ====================================================
-        # CURRENT WEEK STRAT
-        # ====================================================
-
-        if (
-            current_week_strat_filter
-            != "All"
-        ):
-
-            results = (
-
-                results[
-                    results[
-                        "Current Week STRAT"
-                    ]
-                    == current_week_strat_filter
-                ]
-            )
-
-        # ====================================================
-        # DAILY STRAT
-        # ====================================================
-
-        if (
-            daily_strat_filter
-            != "All"
-        ):
-
-            results = (
-
-                results[
-                    results[
-                        "Daily STRAT"
-                    ]
-                    == daily_strat_filter
-                ]
-            )
-
-        # ====================================================
-        # ACTIONABLE SIGNAL
-        # ====================================================
-
-        if (
-            actionable_filter
-            != "All"
-        ):
-
-            if (
-                actionable_category_filter
-                == "Pre-Confirmation"
-            ):
-
-                results = (
-
-                    results[
-                        results[
-                            "First Pre-Confirmation Signal"
+                    weekly_results = (
+                        weekly_results[
+                            weekly_results[
+                                "Low Taken"
+                            ]
                         ]
-                        == actionable_filter
-                    ]
-                )
+                    )
 
-            elif (
-                actionable_category_filter
-                == "Post-Confirmation"
-            ):
+                elif (
+                    weekly_signal_filter
+                    == "PWH Taken"
+                ):
 
-                results = (
-
-                    results[
-                        results[
-                            "First Post-Confirmation Signal"
+                    weekly_results = (
+                        weekly_results[
+                            weekly_results[
+                                "High Taken"
+                            ]
                         ]
-                        == actionable_filter
-                    ]
+                    )
+
+                elif (
+                    weekly_signal_filter
+                    == "PWL Reclaimed"
+                ):
+
+                    weekly_results = (
+                        weekly_results[
+                            weekly_results[
+                                "Low Reclaimed"
+                            ]
+                        ]
+                    )
+
+                elif (
+                    weekly_signal_filter
+                    == "PWH Rejected"
+                ):
+
+                    weekly_results = (
+                        weekly_results[
+                            weekly_results[
+                                "High Rejected"
+                            ]
+                        ]
+                    )
+
+                elif (
+                    weekly_signal_filter
+                    == "Bullish Setup"
+                ):
+
+                    weekly_results = (
+                        weekly_results[
+                            weekly_results[
+                                "Bullish Setup"
+                            ]
+                        ]
+                    )
+
+                elif (
+                    weekly_signal_filter
+                    == "Bearish Setup"
+                ):
+
+                    weekly_results = (
+                        weekly_results[
+                            weekly_results[
+                                "Bearish Setup"
+                            ]
+                        ]
+                    )
+
+                if (
+                    weekly_strat_filter
+                    != "All"
+                ):
+
+                    weekly_results = (
+                        weekly_results[
+                            weekly_results[
+                                "Current Week STRAT"
+                            ]
+                            == weekly_strat_filter
+                        ]
+                    )
+
+                if daily_filter != "All":
+
+                    weekly_results = (
+                        weekly_results[
+                            weekly_results[
+                                "Daily STRAT"
+                            ]
+                            == daily_filter
+                        ]
+                    )
+
+                if (
+                    weekly_actionable_filter
+                    != "All"
+                ):
+
+                    if (
+                        weekly_actionable_category
+                        == "Pre-Confirmation"
+                    ):
+
+                        weekly_results = (
+                            weekly_results[
+                                weekly_results[
+                                    "First Pre-Confirmation Signal"
+                                ]
+                                == weekly_actionable_filter
+                            ]
+                        )
+
+                    elif (
+                        weekly_actionable_category
+                        == "Post-Confirmation"
+                    ):
+
+                        weekly_results = (
+                            weekly_results[
+                                weekly_results[
+                                    "First Post-Confirmation Signal"
+                                ]
+                                == weekly_actionable_filter
+                            ]
+                        )
+
+                    else:
+
+                        weekly_results = (
+                            weekly_results[
+                                (
+                                    weekly_results[
+                                        "First Pre-Confirmation Signal"
+                                    ]
+                                    == weekly_actionable_filter
+                                )
+                                |
+                                (
+                                    weekly_results[
+                                        "First Post-Confirmation Signal"
+                                    ]
+                                    == weekly_actionable_filter
+                                )
+                            ]
+                        )
+
+                if weekly_min_rvol > 0:
+
+                    weekly_results = (
+                        weekly_results[
+                            weekly_results[
+                                "RVOL"
+                            ]
+                            .fillna(0)
+                            >= weekly_min_rvol
+                        ]
+                    )
+
+            if weekly_results.empty:
+
+                st.warning(
+                    "No weekly signals matched."
                 )
 
             else:
 
-                results = (
+                st.success(
+                    f"{len(weekly_results)} "
+                    f"weekly signals found."
+                )
 
-                    results[
+                weekly_results = (
+                    weekly_results.sort_values(
+                        [
+                            "Bullish Setup",
+                            "Bearish Setup",
+                            "RVOL"
+                        ],
+                        ascending=[
+                            False,
+                            False,
+                            False
+                        ],
+                        na_position="last"
+                    )
+                )
 
-                        (
-                            results[
-                                "First Pre-Confirmation Signal"
+                st.dataframe(
+                    weekly_results,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                csv = (
+                    weekly_results
+                    .to_csv(index=False)
+                    .encode("utf-8")
+                )
+
+                st.download_button(
+                    "⬇️ Download Weekly Results",
+                    csv,
+                    "weekly_strat_scanner.csv",
+                    "text/csv",
+                    use_container_width=True
+                )
+
+
+# ============================================================
+# MONTHLY TAB
+# ============================================================
+
+with monthly_tab:
+
+    st.header(
+        "🗓️ Monthly Sweep Scanner"
+    )
+
+    st.caption(
+        "Previous Month High/Low → "
+        "Sweep → Reclaim/Reject → "
+        "Weekly STRAT → Monthly FTFC"
+    )
+
+    # ========================================================
+    # MONTHLY FILTERS
+    # ========================================================
+
+    m1, m2, m3, m4 = st.columns(4)
+
+    monthly_signal_filter = (
+        m1.selectbox(
+            "Monthly Signal",
+            [
+                "All Sweeps",
+                "PML Taken",
+                "PMH Taken",
+                "PML Reclaimed",
+                "PMH Rejected",
+                "Bullish Setup",
+                "Bearish Setup"
+            ],
+            key="monthly_signal_filter"
+        )
+    )
+
+    month_strat_filter = (
+        m2.selectbox(
+            "Current Month STRAT",
+            [
+                "All",
+                "1 Inside",
+                "2U Green",
+                "2U Red",
+                "2D Green",
+                "2D Red",
+                "3 Outside"
+            ],
+            key="month_strat_filter"
+        )
+    )
+
+    month_weekly_strat_filter = (
+        m3.selectbox(
+            "Current Week STRAT",
+            [
+                "All",
+                "1 Inside",
+                "2U Green",
+                "2U Red",
+                "2D Green",
+                "2D Red",
+                "3 Outside"
+            ],
+            key="month_weekly_filter"
+        )
+    )
+
+    monthly_actionable_filter = (
+        m4.selectbox(
+            "Weekly Actionable Signal",
+            [
+                "All",
+                "Hammer",
+                "Shooting Star",
+                "Inside Bar"
+            ],
+            key="monthly_actionable"
+        )
+    )
+
+    m5, m6 = st.columns(2)
+
+    monthly_actionable_category = (
+        m5.selectbox(
+            "Actionable Category",
+            [
+                "All",
+                "Pre-Confirmation",
+                "Post-Confirmation"
+            ],
+            key="monthly_category"
+        )
+    )
+
+    monthly_min_rvol = (
+        m6.number_input(
+            "Minimum RVOL",
+            min_value=0.0,
+            max_value=10.0,
+            value=0.0,
+            step=0.1,
+            key="monthly_rvol"
+        )
+    )
+
+    run_monthly = st.button(
+        "🚀 Run Monthly Scanner",
+        type="primary",
+        use_container_width=True,
+        key="run_monthly"
+    )
+
+    if run_monthly:
+
+        if not market_ready:
+
+            st.warning(
+                "Load market data first."
+            )
+
+        else:
+
+            monthly_results = (
+                scan_monthly(
+                    selected_tickers,
+                    st.session_state.market_data
+                )
+            )
+
+            # =================================================
+            # MONTHLY FILTERS
+            # =================================================
+
+            if not monthly_results.empty:
+
+                if (
+                    monthly_signal_filter
+                    == "PML Taken"
+                ):
+
+                    monthly_results = (
+                        monthly_results[
+                            monthly_results[
+                                "Low Taken"
                             ]
-                            == actionable_filter
+                        ]
+                    )
+
+                elif (
+                    monthly_signal_filter
+                    == "PMH Taken"
+                ):
+
+                    monthly_results = (
+                        monthly_results[
+                            monthly_results[
+                                "High Taken"
+                            ]
+                        ]
+                    )
+
+                elif (
+                    monthly_signal_filter
+                    == "PML Reclaimed"
+                ):
+
+                    monthly_results = (
+                        monthly_results[
+                            monthly_results[
+                                "Low Reclaimed"
+                            ]
+                        ]
+                    )
+
+                elif (
+                    monthly_signal_filter
+                    == "PMH Rejected"
+                ):
+
+                    monthly_results = (
+                        monthly_results[
+                            monthly_results[
+                                "High Rejected"
+                            ]
+                        ]
+                    )
+
+                elif (
+                    monthly_signal_filter
+                    == "Bullish Setup"
+                ):
+
+                    monthly_results = (
+                        monthly_results[
+                            monthly_results[
+                                "Bullish Setup"
+                            ]
+                        ]
+                    )
+
+                elif (
+                    monthly_signal_filter
+                    == "Bearish Setup"
+                ):
+
+                    monthly_results = (
+                        monthly_results[
+                            monthly_results[
+                                "Bearish Setup"
+                            ]
+                        ]
+                    )
+
+                # CURRENT MONTH STRAT
+
+                if (
+                    month_strat_filter
+                    != "All"
+                ):
+
+                    monthly_results = (
+                        monthly_results[
+                            monthly_results[
+                                "Current Month STRAT"
+                            ]
+                            == month_strat_filter
+                        ]
+                    )
+
+                # CURRENT WEEK STRAT
+
+                if (
+                    month_weekly_strat_filter
+                    != "All"
+                ):
+
+                    monthly_results = (
+                        monthly_results[
+                            monthly_results[
+                                "Current Week STRAT"
+                            ]
+                            == month_weekly_strat_filter
+                        ]
+                    )
+
+                # ACTIONABLE SIGNAL
+
+                if (
+                    monthly_actionable_filter
+                    != "All"
+                ):
+
+                    if (
+                        monthly_actionable_category
+                        == "Pre-Confirmation"
+                    ):
+
+                        monthly_results = (
+                            monthly_results[
+                                monthly_results[
+                                    "First Pre-Confirmation Weekly Signal"
+                                ]
+                                == monthly_actionable_filter
+                            ]
                         )
 
-                        |
+                    elif (
+                        monthly_actionable_category
+                        == "Post-Confirmation"
+                    ):
 
-                        (
-                            results[
-                                "First Post-Confirmation Signal"
+                        monthly_results = (
+                            monthly_results[
+                                monthly_results[
+                                    "First Post-Confirmation Weekly Signal"
+                                ]
+                                == monthly_actionable_filter
                             ]
-                            == actionable_filter
                         )
+
+                    else:
+
+                        monthly_results = (
+                            monthly_results[
+                                (
+                                    monthly_results[
+                                        "First Pre-Confirmation Weekly Signal"
+                                    ]
+                                    == monthly_actionable_filter
+                                )
+                                |
+                                (
+                                    monthly_results[
+                                        "First Post-Confirmation Weekly Signal"
+                                    ]
+                                    == monthly_actionable_filter
+                                )
+                            ]
+                        )
+
+                if monthly_min_rvol > 0:
+
+                    monthly_results = (
+                        monthly_results[
+                            monthly_results[
+                                "RVOL"
+                            ]
+                            .fillna(0)
+                            >= monthly_min_rvol
+                        ]
+                    )
+
+            # =================================================
+            # DISPLAY MONTHLY RESULTS
+            # =================================================
+
+            if monthly_results.empty:
+
+                st.warning(
+                    "No monthly signals matched."
+                )
+
+            else:
+
+                metric1, metric2, metric3, metric4, metric5 = (
+                    st.columns(5)
+                )
+
+                metric1.metric(
+                    "Matches",
+                    len(monthly_results)
+                )
+
+                metric2.metric(
+                    "PML Taken",
+                    int(
+                        monthly_results[
+                            "Low Taken"
+                        ].sum()
+                    )
+                )
+
+                metric3.metric(
+                    "PMH Taken",
+                    int(
+                        monthly_results[
+                            "High Taken"
+                        ].sum()
+                    )
+                )
+
+                metric4.metric(
+                    "Bullish",
+                    int(
+                        monthly_results[
+                            "Bullish Setup"
+                        ].sum()
+                    )
+                )
+
+                metric5.metric(
+                    "Bearish",
+                    int(
+                        monthly_results[
+                            "Bearish Setup"
+                        ].sum()
+                    )
+                )
+
+                monthly_results = (
+                    monthly_results.sort_values(
+                        [
+                            "Bullish Setup",
+                            "Bearish Setup",
+                            "RVOL"
+                        ],
+                        ascending=[
+                            False,
+                            False,
+                            False
+                        ],
+                        na_position="last"
+                    )
+                )
+
+                # =============================================
+                # MAIN MONTHLY RESULTS
+                # =============================================
+
+                st.subheader(
+                    "🔎 Monthly Scanner Results"
+                )
+
+                st.dataframe(
+                    monthly_results,
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                # =============================================
+                # POST CONFIRMATION
+                # =============================================
+
+                confirmed_monthly = (
+                    monthly_results[
+                        monthly_results[
+                            "First Post-Confirmation Weekly Signal"
+                        ]
+                        .notna()
                     ]
                 )
 
-        elif (
-            actionable_category_filter
-            == "Pre-Confirmation"
-        ):
+                if not confirmed_monthly.empty:
 
-            results = (
-
-                results[
-                    results[
-                        "First Pre-Confirmation Signal"
-                    ]
-                    .notna()
-                ]
-            )
-
-        elif (
-            actionable_category_filter
-            == "Post-Confirmation"
-        ):
-
-            results = (
-
-                results[
-                    results[
-                        "First Post-Confirmation Signal"
-                    ]
-                    .notna()
-                ]
-            )
-
-        # ====================================================
-        # FTFC
-        # ====================================================
-
-        if (
-            ftfc_filter
-            != "All"
-        ):
-
-            results = (
-
-                results[
-                    results[
-                        "FTFC"
-                    ]
-                    == ftfc_filter
-                ]
-            )
-
-        # ====================================================
-        # RVOL
-        # ====================================================
-
-        if minimum_rvol > 0:
-
-            results = (
-
-                results[
-                    results[
-                        "RVOL"
-                    ]
-                    .fillna(0)
-                    >= minimum_rvol
-                ]
-            )
-
-    # ========================================================
-    # DISPLAY
-    # ========================================================
-
-    st.divider()
-
-    if results.empty:
-
-        st.warning(
-            "No stocks matched the selected conditions."
-        )
-
-    else:
-
-        # ====================================================
-        # METRICS
-        # ====================================================
-
-        metric1, metric2, metric3, metric4, metric5 = (
-            st.columns(5)
-        )
-
-        metric1.metric(
-            "Matches",
-            len(
-                results
-            )
-        )
-
-        metric2.metric(
-            "PWL Taken",
-            int(
-                results[
-                    "Low Taken"
-                ]
-                .sum()
-            )
-        )
-
-        metric3.metric(
-            "PWH Taken",
-            int(
-                results[
-                    "High Taken"
-                ]
-                .sum()
-            )
-        )
-
-        metric4.metric(
-            "Pre-Confirm",
-            int(
-                results[
-                    "First Pre-Confirmation Signal"
-                ]
-                .notna()
-                .sum()
-            )
-        )
-
-        metric5.metric(
-            "Post-Confirm",
-            int(
-                results[
-                    "First Post-Confirmation Signal"
-                ]
-                .notna()
-                .sum()
-            )
-        )
-
-        # ====================================================
-        # SORT
-        # ====================================================
-
-        results = (
-
-            results.sort_values(
-
-                by=[
-
-                    "Bullish Setup",
-
-                    "Bearish Setup",
-
-                    "RVOL"
-                ],
-
-                ascending=[
-
-                    False,
-
-                    False,
-
-                    False
-                ],
-
-                na_position="last"
-            )
-        )
-
-        # ====================================================
-        # MAIN TABLE
-        # ====================================================
-
-        st.subheader(
-            "🔎 Scanner Results"
-        )
-
-        display_columns = [
-
-            "Ticker",
-
-            "Price",
-
-            "Prev Week Low",
-
-            "Prev Week High",
-
-            "Prev Week STRAT",
-
-            "Current Week Low",
-
-            "Current Week High",
-
-            "Current Week STRAT",
-
-            "Low Taken",
-
-            "Low Sweep Date",
-
-            "Low Reclaimed",
-
-            "Low Reclaim Date",
-
-            "High Taken",
-
-            "High Sweep Date",
-
-            "High Rejected",
-
-            "High Rejection Date",
-
-            "First Pre-Confirmation Signal",
-
-            "Pre-Confirmation Date",
-
-            "Pre-Confirmation Event",
-
-            "First Post-Confirmation Signal",
-
-            "Post-Confirmation Date",
-
-            "Post-Confirmation Event",
-
-            "Daily STRAT",
-
-            "Weekly FTFC",
-
-            "Monthly FTFC",
-
-            "FTFC",
-
-            "RVOL",
-
-            "% From PWL",
-
-            "% From PWH",
-
-            "Signal"
-        ]
-
-        st.dataframe(
-
-            results[
-                display_columns
-            ],
-
-            use_container_width=True,
-
-            hide_index=True,
-
-            column_config={
-
-                "Price":
-
-                    st.column_config.NumberColumn(
-                        format="$%.2f"
-                    ),
-
-                "Prev Week Low":
-
-                    st.column_config.NumberColumn(
-                        format="$%.2f"
-                    ),
-
-                "Prev Week High":
-
-                    st.column_config.NumberColumn(
-                        format="$%.2f"
-                    ),
-
-                "Current Week Low":
-
-                    st.column_config.NumberColumn(
-                        format="$%.2f"
-                    ),
-
-                "Current Week High":
-
-                    st.column_config.NumberColumn(
-                        format="$%.2f"
-                    ),
-
-                "RVOL":
-
-                    st.column_config.NumberColumn(
-                        format="%.2fx"
-                    ),
-
-                "% From PWL":
-
-                    st.column_config.NumberColumn(
-                        format="%.2f%%"
-                    ),
-
-                "% From PWH":
-
-                    st.column_config.NumberColumn(
-                        format="%.2f%%"
+                    st.subheader(
+                        "✅ Monthly Post-Confirmation Signals"
                     )
-            }
-        )
 
-        # ====================================================
-        # POST-CONFIRMATION
-        # ====================================================
+                    st.dataframe(
+                        confirmed_monthly[
+                            [
+                                "Ticker",
+                                "Price",
+                                "Post-Confirmation Event",
+                                "First Post-Confirmation Weekly Signal",
+                                "Post-Confirmation Week",
+                                "Current Month STRAT",
+                                "Current Week STRAT",
+                                "Monthly FTFC",
+                                "RVOL"
+                            ]
+                        ],
+                        use_container_width=True,
+                        hide_index=True
+                    )
 
-        confirmed = (
+                # =============================================
+                # PRE CONFIRMATION
+                # =============================================
 
-            results[
-                results[
-                    "First Post-Confirmation Signal"
-                ]
-                .notna()
-            ]
-        )
-
-        if not confirmed.empty:
-
-            st.subheader(
-                "✅ Post-Confirmation Actionable Signals"
-            )
-
-            st.caption(
-                "First Hammer, Shooting Star or Inside Bar "
-                "after a PWL reclaim or PWH rejection."
-            )
-
-            st.dataframe(
-
-                confirmed[
-                    [
-
-                        "Ticker",
-
-                        "Price",
-
-                        "Post-Confirmation Event",
-
-                        "First Post-Confirmation Signal",
-
-                        "Post-Confirmation Date",
-
-                        "Current Week STRAT",
-
-                        "Daily STRAT",
-
-                        "Weekly FTFC",
-
-                        "RVOL"
+                pre_monthly = (
+                    monthly_results[
+                        monthly_results[
+                            "First Pre-Confirmation Weekly Signal"
+                        ]
+                        .notna()
                     ]
-                ],
+                )
 
-                use_container_width=True,
+                if not pre_monthly.empty:
 
-                hide_index=True
-            )
+                    st.subheader(
+                        "⚠️ Monthly Pre-Confirmation Signals"
+                    )
 
-        # ====================================================
-        # PRE-CONFIRMATION
-        # ====================================================
+                    st.dataframe(
+                        pre_monthly[
+                            [
+                                "Ticker",
+                                "Price",
+                                "Pre-Confirmation Event",
+                                "First Pre-Confirmation Weekly Signal",
+                                "Pre-Confirmation Week",
+                                "Current Month STRAT",
+                                "Current Week STRAT",
+                                "Monthly FTFC",
+                                "RVOL"
+                            ]
+                        ],
+                        use_container_width=True,
+                        hide_index=True
+                    )
 
-        unconfirmed = (
+                # =============================================
+                # BULLISH MONTHLY
+                # =============================================
 
-            results[
-                results[
-                    "First Pre-Confirmation Signal"
-                ]
-                .notna()
-            ]
-        )
-
-        if not unconfirmed.empty:
-
-            st.subheader(
-                "⚠️ Pre-Confirmation Actionable Signals"
-            )
-
-            st.caption(
-                "First Hammer, Shooting Star or Inside Bar "
-                "after PWL/PWH was taken but before "
-                "reclaim/rejection."
-            )
-
-            st.dataframe(
-
-                unconfirmed[
-                    [
-
-                        "Ticker",
-
-                        "Price",
-
-                        "Pre-Confirmation Event",
-
-                        "First Pre-Confirmation Signal",
-
-                        "Pre-Confirmation Date",
-
-                        "Current Week STRAT",
-
-                        "Daily STRAT",
-
-                        "Weekly FTFC",
-
-                        "RVOL"
+                monthly_bullish = (
+                    monthly_results[
+                        monthly_results[
+                            "Bullish Setup"
+                        ]
                     ]
-                ],
+                )
 
-                use_container_width=True,
+                if not monthly_bullish.empty:
 
-                hide_index=True
-            )
+                    st.subheader(
+                        "🟢 Bullish Monthly Setups"
+                    )
 
-        # ====================================================
-        # BULLISH SETUPS
-        # ====================================================
+                    st.dataframe(
+                        monthly_bullish[
+                            [
+                                "Ticker",
+                                "Price",
+                                "Prev Month Low",
+                                "PML Sweep Date",
+                                "PML Reclaim Date",
+                                "Prev Month STRAT",
+                                "Current Month STRAT",
+                                "Current Week STRAT",
+                                "First Post-Confirmation Weekly Signal",
+                                "Post-Confirmation Week",
+                                "Monthly FTFC",
+                                "RVOL",
+                                "Signal"
+                            ]
+                        ],
+                        use_container_width=True,
+                        hide_index=True
+                    )
 
-        bullish = (
+                # =============================================
+                # BEARISH MONTHLY
+                # =============================================
 
-            results[
-                results[
-                    "Bullish Setup"
-                ]
-            ]
-        )
-
-        if not bullish.empty:
-
-            st.subheader(
-                "🟢 Bullish STRAT Setups"
-            )
-
-            st.caption(
-                "PWL Taken → Reclaimed → "
-                "Daily STRAT → Weekly FTFC Up"
-            )
-
-            st.dataframe(
-
-                bullish[
-                    [
-
-                        "Ticker",
-
-                        "Price",
-
-                        "Prev Week Low",
-
-                        "Low Sweep Date",
-
-                        "Low Reclaim Date",
-
-                        "Prev Week STRAT",
-
-                        "Current Week STRAT",
-
-                        "Daily STRAT",
-
-                        "First Post-Confirmation Signal",
-
-                        "Post-Confirmation Date",
-
-                        "Weekly FTFC",
-
-                        "Monthly FTFC",
-
-                        "RVOL",
-
-                        "Signal"
+                monthly_bearish = (
+                    monthly_results[
+                        monthly_results[
+                            "Bearish Setup"
+                        ]
                     ]
-                ],
-
-                use_container_width=True,
-
-                hide_index=True
-            )
-
-        # ====================================================
-        # BEARISH SETUPS
-        # ====================================================
-
-        bearish = (
-
-            results[
-                results[
-                    "Bearish Setup"
-                ]
-            ]
-        )
-
-        if not bearish.empty:
-
-            st.subheader(
-                "🔴 Bearish STRAT Setups"
-            )
-
-            st.caption(
-                "PWH Taken → Rejected → "
-                "Daily STRAT → Weekly FTFC Down"
-            )
-
-            st.dataframe(
-
-                bearish[
-                    [
-
-                        "Ticker",
-
-                        "Price",
-
-                        "Prev Week High",
-
-                        "High Sweep Date",
-
-                        "High Rejection Date",
-
-                        "Prev Week STRAT",
-
-                        "Current Week STRAT",
-
-                        "Daily STRAT",
-
-                        "First Post-Confirmation Signal",
-
-                        "Post-Confirmation Date",
-
-                        "Weekly FTFC",
-
-                        "Monthly FTFC",
-
-                        "RVOL",
-
-                        "Signal"
-                    ]
-                ],
-
-                use_container_width=True,
-
-                hide_index=True
-            )
-
-        # ====================================================
-        # DOWNLOAD
-        # ====================================================
-
-        csv = (
-
-            results
-            .to_csv(
-                index=False
-            )
-
-            .encode(
-                "utf-8"
-            )
-        )
-
-        st.download_button(
-
-            "⬇️ Download Results",
-
-            data=csv,
-
-            file_name=(
-                "sp500_nasdaq100_strat_scanner.csv"
-            ),
-
-            mime="text/csv",
-
-            use_container_width=True
-        )
-
-
-# ============================================================
-# HOME
-# ============================================================
-
-else:
-
-    st.success(
-
-        f"✓ S&P 500: "
-        f"{len(sp500_tickers)} | "
-
-        f"Nasdaq-100: "
-        f"{len(nasdaq100_tickers)} | "
-
-        f"Duplicates removed: "
-        f"{duplicate_count} | "
-
-        f"Combined unique: "
-        f"{len(combined_tickers)}"
-    )
-
-    st.markdown(
-        """
-### 📊 Market Universe
-
-The scanner supports:
-
-- **S&P 500 + Nasdaq-100**
-- **S&P 500**
-- **Nasdaq-100**
-- **Custom Watchlist**
-
-Duplicate symbols are automatically removed before downloading
-market data.
-
-
-### 🟢 Bullish Setup
-
-**PWL Taken → Reclaimed → Daily STRAT → Weekly FTFC Up**
-
-Accepted Daily STRAT:
-
-- 2U Green
-- 2D Green
-- 2U Red
-- 1 Inside
-- 3 Outside
-
-
-### 🔴 Bearish Setup
-
-**PWH Taken → Rejected → Daily STRAT → Weekly FTFC Down**
-
-Accepted Daily STRAT:
-
-- 2D Red
-- 2U Red
-- 2D Green
-- 1 Inside
-- 3 Outside
-
-
-### ⚠️ Pre-Confirmation Actionable Signal
-
-After PWL/PWH is taken but before reclaim/rejection:
-
-- Hammer
-- Shooting Star
-- Inside Bar
-
-
-### ✅ Post-Confirmation Actionable Signal
-
-After PWL reclaim or PWH rejection:
-
-- Hammer
-- Shooting Star
-- Inside Bar
-
-
-### Weekly STRAT
-
-Both are calculated:
-
-- Previous Week STRAT
-- Current Week STRAT
-
-Classifications:
-
-- 1 Inside
-- 2U Green
-- 2U Red
-- 2D Green
-- 2D Red
-- 3 Outside
-"""
-    )
+                )
+
+                if not monthly_bearish.empty:
+
+                    st.subheader(
+                        "🔴 Bearish Monthly Setups"
+                    )
+
+                    st.dataframe(
+                        monthly_bearish[
+                            [
+                                "Ticker",
+                                "Price",
+                                "Prev Month High",
+                                "PMH Sweep Date",
+                                "PMH Rejection Date",
+                                "Prev Month STRAT",
+                                "Current Month STRAT",
+                                "Current Week STRAT",
+                                "First Post-Confirmation Weekly Signal",
+                                "Post-Confirmation Week",
+                                "Monthly FTFC",
+                                "RVOL",
+                                "Signal"
+                            ]
+                        ],
+                        use_container_width=True,
+                        hide_index=True
+                    )
+
+                # =============================================
+                # DOWNLOAD MONTHLY
+                # =============================================
+
+                monthly_csv = (
+                    monthly_results
+                    .to_csv(index=False)
+                    .encode("utf-8")
+                )
+
+                st.download_button(
+                    "⬇️ Download Monthly Results",
+                    monthly_csv,
+                    "monthly_strat_scanner.csv",
+                    "text/csv",
+                    use_container_width=True
+                )
