@@ -20,7 +20,7 @@ st.title("📊 STRAT Market Scanner")
 st.caption(
     "S&P 500 + Nasdaq-100 + ETFs | "
     "Weekly / Monthly Liquidity Sweeps | "
-    "STRAT | FTFC | RVOL | ATR % | Market Context"
+    "2-Week + 1H Reclaim | STRAT | FTFC | RVOL | ATR %"
 )
 
 
@@ -149,12 +149,12 @@ def get_sp500_tickers():
             .tolist()
         )
 
-        tickers = [
-            ticker.replace(".", "-")
-            for ticker in tickers
-        ]
-
-        return sorted(set(tickers))
+        return sorted(
+            set(
+                ticker.replace(".", "-")
+                for ticker in tickers
+            )
+        )
 
     except Exception as exc:
 
@@ -167,9 +167,6 @@ def get_sp500_tickers():
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_nasdaq100_tickers():
-
-    # Static fallback list.
-    # You can replace this later with a maintained CSV/API source.
 
     tickers = [
         "AAPL", "ABNB", "ADBE", "ADI", "ADP",
@@ -231,7 +228,7 @@ def get_asset_type(ticker):
 
 
 # ============================================================
-# MARKET DATA DOWNLOAD
+# DAILY DATA DOWNLOAD
 # ============================================================
 
 @st.cache_data(ttl=900, show_spinner=False)
@@ -274,10 +271,6 @@ def download_market_data(tickers):
                 or data.empty
             ):
                 continue
-
-            # ----------------------------------------------
-            # MULTIPLE TICKERS
-            # ----------------------------------------------
 
             if len(batch) > 1:
 
@@ -323,17 +316,153 @@ def download_market_data(tickers):
                             continue
 
                         if not ticker_df.empty:
-
-                            results[ticker] = (
-                                ticker_df
-                            )
+                            results[ticker] = ticker_df
 
                     except Exception:
                         continue
 
-            # ----------------------------------------------
-            # SINGLE TICKER
-            # ----------------------------------------------
+            else:
+
+                ticker = batch[0]
+                ticker_df = data.copy()
+
+                if isinstance(
+                    ticker_df.columns,
+                    pd.MultiIndex,
+                ):
+
+                    level0 = set(
+                        ticker_df.columns
+                        .get_level_values(0)
+                    )
+
+                    level1 = set(
+                        ticker_df.columns
+                        .get_level_values(1)
+                    )
+
+                    if ticker in level0:
+
+                        ticker_df = (
+                            ticker_df[ticker]
+                            .copy()
+                        )
+
+                    elif ticker in level1:
+
+                        ticker_df = (
+                            ticker_df.xs(
+                                ticker,
+                                axis=1,
+                                level=1,
+                            )
+                            .copy()
+                        )
+
+                if not ticker_df.empty:
+                    results[ticker] = ticker_df
+
+        except Exception:
+            continue
+
+        time.sleep(0.10)
+
+    return results
+
+
+# ============================================================
+# HOURLY DATA DOWNLOAD
+# ============================================================
+
+@st.cache_data(ttl=900, show_spinner=False)
+def download_hourly_market_data(tickers):
+
+    tickers = sorted(set(tickers))
+
+    results = {}
+
+    if not tickers:
+        return results
+
+    batch_size = 30
+
+    for start in range(
+        0,
+        len(tickers),
+        batch_size,
+    ):
+
+        batch = tickers[
+            start:start + batch_size
+        ]
+
+        try:
+
+            data = yf.download(
+                tickers=batch,
+                period="60d",
+                interval="1h",
+                group_by="ticker",
+                auto_adjust=False,
+                threads=True,
+                progress=False,
+                timeout=30,
+            )
+
+            if (
+                data is None
+                or data.empty
+            ):
+                continue
+
+            if len(batch) > 1:
+
+                if not isinstance(
+                    data.columns,
+                    pd.MultiIndex,
+                ):
+                    continue
+
+                level0 = set(
+                    data.columns
+                    .get_level_values(0)
+                )
+
+                level1 = set(
+                    data.columns
+                    .get_level_values(1)
+                )
+
+                for ticker in batch:
+
+                    try:
+
+                        if ticker in level0:
+
+                            ticker_df = (
+                                data[ticker]
+                                .copy()
+                            )
+
+                        elif ticker in level1:
+
+                            ticker_df = (
+                                data.xs(
+                                    ticker,
+                                    axis=1,
+                                    level=1,
+                                )
+                                .copy()
+                            )
+
+                        else:
+                            continue
+
+                        if not ticker_df.empty:
+                            results[ticker] = ticker_df
+
+                    except Exception:
+                        continue
 
             else:
 
@@ -375,10 +504,7 @@ def download_market_data(tickers):
                         )
 
                 if not ticker_df.empty:
-
-                    results[ticker] = (
-                        ticker_df
-                    )
+                    results[ticker] = ticker_df
 
         except Exception:
             continue
@@ -389,22 +515,17 @@ def download_market_data(tickers):
 
 
 # ============================================================
-# CLEAN DATA
+# GENERIC DATA CLEANER
 # ============================================================
 
-def clean_ticker_dataframe(
-    market_data,
-    ticker,
-):
+def clean_dataframe(df):
 
     try:
 
-        if ticker not in market_data:
+        if df is None:
             return None
 
-        df = market_data[
-            ticker
-        ].copy()
+        df = df.copy()
 
         if isinstance(
             df.columns,
@@ -519,8 +640,34 @@ def clean_ticker_dataframe(
         return None
 
 
+def clean_ticker_dataframe(
+    market_data,
+    ticker,
+):
+
+    if ticker not in market_data:
+        return None
+
+    return clean_dataframe(
+        market_data[ticker]
+    )
+
+
+def clean_hourly_dataframe(
+    hourly_data,
+    ticker,
+):
+
+    if ticker not in hourly_data:
+        return None
+
+    return clean_dataframe(
+        hourly_data[ticker]
+    )
+
+
 # ============================================================
-# STRAT
+# STRAT CLASSIFICATION
 # ============================================================
 
 def classify_strat_candle(
@@ -631,8 +778,7 @@ def classify_actionable_candle(
         candle_range * 0.05,
     )
 
-    # Priority 1: Inside Bar
-
+    # Inside Bar
     if (
         current_high <= previous_high
         and
@@ -640,31 +786,27 @@ def classify_actionable_candle(
     ):
         return "Inside Bar"
 
-    # Priority 2: Hammer
-
+    # Hammer
     if (
-        lower_wick
-        >= 2 * body_for_ratio
+        lower_wick >= (
+            2 * body_for_ratio
+        )
         and
-        upper_wick
-        <= body_for_ratio
+        upper_wick <= body_for_ratio
         and
-        body
-        <= candle_range * 0.40
+        body <= candle_range * 0.40
     ):
         return "Hammer"
 
-    # Priority 3: Shooting Star
-
+    # Shooting Star
     if (
-        upper_wick
-        >= 2 * body_for_ratio
+        upper_wick >= (
+            2 * body_for_ratio
+        )
         and
-        lower_wick
-        <= body_for_ratio
+        lower_wick <= body_for_ratio
         and
-        body
-        <= candle_range * 0.40
+        body <= candle_range * 0.40
     ):
         return "Shooting Star"
 
@@ -672,7 +814,7 @@ def classify_actionable_candle(
 
 
 # ============================================================
-# WEEKLY / MONTHLY AGGREGATION
+# WEEKLY / MONTHLY DATA
 # ============================================================
 
 def build_weekly_dataframe(df):
@@ -688,7 +830,7 @@ def build_weekly_dataframe(df):
         temp.index
     )
 
-    weekly = (
+    return (
         temp.groupby("Period")
         .agg(
             Open=("Open", "first"),
@@ -706,8 +848,6 @@ def build_weekly_dataframe(df):
             ),
         )
     )
-
-    return weekly
 
 
 def build_monthly_dataframe(df):
@@ -723,7 +863,7 @@ def build_monthly_dataframe(df):
         temp.index
     )
 
-    monthly = (
+    return (
         temp.groupby("Period")
         .agg(
             Open=("Open", "first"),
@@ -741,8 +881,6 @@ def build_monthly_dataframe(df):
             ),
         )
     )
-
-    return monthly
 
 
 # ============================================================
@@ -948,21 +1086,15 @@ def calculate_ftfc(df):
             .iloc[-1]
         )
 
-        # Weekly FTFC
-
         current_week = (
             df.index[-1]
             .to_period("W-FRI")
         )
 
-        week_mask = (
+        week_data = df[
             df.index
             .to_period("W-FRI")
             == current_week
-        )
-
-        week_data = df[
-            week_mask
         ]
 
         weekly_open = float(
@@ -979,21 +1111,15 @@ def calculate_ftfc(df):
         else:
             weekly = "Neutral"
 
-        # Monthly FTFC
-
         current_month = (
             df.index[-1]
             .to_period("M")
         )
 
-        month_mask = (
+        month_data = df[
             df.index
             .to_period("M")
             == current_month
-        )
-
-        month_data = df[
-            month_mask
         ]
 
         monthly_open = float(
@@ -1056,8 +1182,7 @@ def calculate_rvol(
 
         if (
             df is None
-            or len(df)
-            < lookback + 1
+            or len(df) < lookback + 1
         ):
             return None
 
@@ -1093,7 +1218,7 @@ def calculate_rvol(
 
 
 # ============================================================
-# ATR / ATR %
+# ATR
 # ============================================================
 
 def calculate_atr(
@@ -1101,19 +1226,11 @@ def calculate_atr(
     period=14,
 ):
 
-    """
-    Wilder ATR.
-
-    ATR % =
-        ATR(14) / latest close * 100
-    """
-
     try:
 
         if (
             df is None
-            or len(df)
-            < period + 1
+            or len(df) < period + 1
         ):
 
             return {
@@ -1131,24 +1248,27 @@ def calculate_atr(
             - df["Low"]
         )
 
-        high_previous_close = (
+        high_previous = (
             df["High"]
             - previous_close
         ).abs()
 
-        low_previous_close = (
+        low_previous = (
             df["Low"]
             - previous_close
         ).abs()
 
-        true_range = pd.concat(
-            [
-                high_low,
-                high_previous_close,
-                low_previous_close,
-            ],
-            axis=1,
-        ).max(axis=1)
+        true_range = (
+            pd.concat(
+                [
+                    high_low,
+                    high_previous,
+                    low_previous,
+                ],
+                axis=1,
+            )
+            .max(axis=1)
+        )
 
         atr_series = (
             true_range
@@ -1180,8 +1300,7 @@ def calculate_atr(
             }
 
         atr_pct = (
-            atr
-            / price
+            atr / price
         ) * 100
 
         return {
@@ -1207,7 +1326,7 @@ def calculate_atr(
 
 
 # ============================================================
-# MOVING AVERAGES
+# MA CONTEXT
 # ============================================================
 
 def calculate_ma_context(df):
@@ -1280,12 +1399,9 @@ def calculate_ma_context(df):
         )
 
     if (
-        result["MA20"]
-        is not None
-        and result["MA50"]
-        is not None
-        and result["MA200"]
-        is not None
+        result["MA20"] is not None
+        and result["MA50"] is not None
+        and result["MA200"] is not None
     ):
 
         if (
@@ -1313,24 +1429,18 @@ def calculate_ma_context(df):
             and price > result["MA200"]
         ):
 
-            result["Trend"] = (
-                "Bullish"
-            )
+            result["Trend"] = "Bullish"
 
         elif (
             price < result["MA50"]
             and price < result["MA200"]
         ):
 
-            result["Trend"] = (
-                "Bearish"
-            )
+            result["Trend"] = "Bearish"
 
         else:
 
-            result["Trend"] = (
-                "Mixed"
-            )
+            result["Trend"] = "Mixed"
 
     return result
 
@@ -1480,10 +1590,6 @@ def find_weekly_actionable_signals(
             row["Close"]
         )
 
-        # ----------------------------------------------
-        # UPDATE EVENT STATE FIRST
-        # ----------------------------------------------
-
         if (
             not low_taken
             and current_low
@@ -1522,10 +1628,6 @@ def find_weekly_actionable_signals(
             high_rejected = True
             high_rejection_date = date
 
-        # ----------------------------------------------
-        # PREVIOUS DAILY CANDLE
-        # ----------------------------------------------
-
         location = (
             df.index
             .get_loc(date)
@@ -1562,10 +1664,6 @@ def find_weekly_actionable_signals(
         if actionable is None:
             continue
 
-        # ----------------------------------------------
-        # POST-CONFIRMATION
-        # ----------------------------------------------
-
         if result[
             "post_signal"
         ] is None:
@@ -1576,8 +1674,8 @@ def find_weekly_actionable_signals(
                 low_reclaimed
                 and low_reclaim_date
                 is not None
-                and date
-                >= low_reclaim_date
+                and date >=
+                low_reclaim_date
             ):
 
                 candidates.append(
@@ -1591,8 +1689,8 @@ def find_weekly_actionable_signals(
                 high_rejected
                 and high_rejection_date
                 is not None
-                and date
-                >= high_rejection_date
+                and date >=
+                high_rejection_date
             ):
 
                 candidates.append(
@@ -1626,10 +1724,6 @@ def find_weekly_actionable_signals(
                 ] = (
                     candidates[0][1]
                 )
-
-        # ----------------------------------------------
-        # PRE-CONFIRMATION
-        # ----------------------------------------------
 
         if result[
             "pre_signal"
@@ -1782,10 +1876,6 @@ def find_monthly_actionable_signals(
     low_reclaim_date = None
     high_rejection_date = None
 
-    # ----------------------------------------------
-    # FIND DAILY MONTHLY EVENT DATES
-    # ----------------------------------------------
-
     for date, row in (
         month_daily.iterrows()
     ):
@@ -1840,10 +1930,6 @@ def find_monthly_actionable_signals(
             high_rejected = True
             high_rejection_date = date
 
-    # ----------------------------------------------
-    # BUILD WEEKLY CANDLES
-    # ----------------------------------------------
-
     weekly = build_weekly_dataframe(
         df
     )
@@ -1852,7 +1938,6 @@ def find_monthly_actionable_signals(
         weekly.index
     )
 
-    # Use actual observed trading dates.
     monthly_weekly = weekly[
         (
             weekly["FirstDate"]
@@ -1920,10 +2005,6 @@ def find_monthly_actionable_signals(
             row["LastDate"]
         )
 
-        # ----------------------------------------------
-        # POST-CONFIRMATION
-        # ----------------------------------------------
-
         if result[
             "post_signal"
         ] is None:
@@ -1982,10 +2063,6 @@ def find_monthly_actionable_signals(
                 ] = (
                     candidates[0][1]
                 )
-
-        # ----------------------------------------------
-        # PRE-CONFIRMATION
-        # ----------------------------------------------
 
         if result[
             "pre_signal"
@@ -2100,7 +2177,7 @@ def find_monthly_actionable_signals(
 
 
 # ============================================================
-# WEEKLY SCANNER
+# ORIGINAL WEEKLY SCANNER
 # ============================================================
 
 def scan_weekly(
@@ -2176,8 +2253,6 @@ def scan_weekly(
                 > previous_high
             )
 
-            # Scanner only shows sweeps.
-
             if not (
                 low_taken
                 or high_taken
@@ -2186,14 +2261,12 @@ def scan_weekly(
 
             low_reclaimed = (
                 low_taken
-                and price
-                > previous_low
+                and price > previous_low
             )
 
             high_rejected = (
                 high_taken
-                and price
-                < previous_high
+                and price < previous_high
             )
 
             daily_strat = (
@@ -2211,8 +2284,7 @@ def scan_weekly(
             )
 
             atr_data = calculate_atr(
-                df,
-                period=14,
+                df
             )
 
             actionable = (
@@ -2508,7 +2580,7 @@ def scan_weekly(
 
 
 # ============================================================
-# MONTHLY SCANNER
+# ORIGINAL MONTHLY SCANNER
 # ============================================================
 
 def scan_monthly(
@@ -2592,14 +2664,12 @@ def scan_monthly(
 
             low_reclaimed = (
                 low_taken
-                and price
-                > previous_low
+                and price > previous_low
             )
 
             high_rejected = (
                 high_taken
-                and price
-                < previous_high
+                and price < previous_high
             )
 
             weekly_strat = (
@@ -2617,8 +2687,7 @@ def scan_monthly(
             )
 
             atr_data = calculate_atr(
-                df,
-                period=14,
+                df
             )
 
             actionable = (
@@ -2914,6 +2983,959 @@ def scan_monthly(
 
 
 # ============================================================
+# NEW: 2-WEEK + 1H CHRONOLOGICAL SCANNER
+# ============================================================
+
+def scan_two_week_levels(
+    tickers,
+    daily_market_data,
+    hourly_market_data,
+):
+
+    rows = []
+
+    tickers = sorted(
+        set(tickers)
+    )
+
+    total = len(tickers)
+
+    progress = st.progress(0)
+    status = st.empty()
+
+    for index, ticker in enumerate(
+        tickers
+    ):
+
+        status.text(
+            f"2-Week + 1H scan: "
+            f"{ticker} "
+            f"({index + 1}/{total})"
+        )
+
+        try:
+
+            daily_df = (
+                clean_ticker_dataframe(
+                    daily_market_data,
+                    ticker,
+                )
+            )
+
+            hourly_df = (
+                clean_hourly_dataframe(
+                    hourly_market_data,
+                    ticker,
+                )
+            )
+
+            if (
+                daily_df is None
+                or hourly_df is None
+                or len(daily_df) < 30
+                or len(hourly_df) < 3
+            ):
+                continue
+
+            # =================================================
+            # PREVIOUS TWO COMPLETED WEEKLY CANDLES
+            # =================================================
+
+            weekly = build_weekly_dataframe(
+                daily_df
+            )
+
+            current_week = (
+                daily_df.index[-1]
+                .to_period("W-FRI")
+            )
+
+            completed_weeks = weekly[
+                weekly.index
+                < current_week
+            ].copy()
+
+            if len(completed_weeks) < 2:
+                continue
+
+            # Week -1 = most recent completed week
+            week_1 = (
+                completed_weeks
+                .iloc[-1]
+            )
+
+            # Week -2 = week before Week -1
+            week_2 = (
+                completed_weeks
+                .iloc[-2]
+            )
+
+            week_1_low = float(
+                week_1["Low"]
+            )
+
+            week_2_low = float(
+                week_2["Low"]
+            )
+
+            week_1_high = float(
+                week_1["High"]
+            )
+
+            week_2_high = float(
+                week_2["High"]
+            )
+
+            # =================================================
+            # EXACT USER-DEFINED LEVEL
+            # =================================================
+            #
+            # Example:
+            #
+            # Week -1 Low = 185
+            # Week -2 Low = 181
+            #
+            # required_low = 181
+            #
+            # Price < 181
+            # 1H close > 181
+            # actionable signal
+            #
+            # For highs:
+            #
+            # Week -1 High = 205
+            # Week -2 High = 210
+            #
+            # required_high = 210
+            #
+            # Price > 210
+            # 1H close < 210
+            # actionable signal
+            # =================================================
+
+            required_low = min(
+                week_1_low,
+                week_2_low,
+            )
+
+            required_high = max(
+                week_1_high,
+                week_2_high,
+            )
+
+            # =================================================
+            # CURRENT WEEK HOURLY DATA
+            # =================================================
+
+            hourly_current_week = (
+                hourly_df[
+                    hourly_df.index
+                    .to_period("W-FRI")
+                    == current_week
+                ]
+                .copy()
+            )
+
+            if (
+                len(hourly_current_week)
+                < 2
+            ):
+                continue
+
+            # =================================================
+            # BULLISH STATE
+            # =================================================
+
+            low_swept = False
+
+            low_sweep_time = None
+            low_sweep_price = None
+
+            bullish_signal = None
+            bullish_signal_time = None
+            bullish_close = None
+
+            bullish_hourly_strat = None
+            bullish_pattern = None
+
+            bullish_same_candle = False
+
+            # =================================================
+            # BEARISH STATE
+            # =================================================
+
+            high_swept = False
+
+            high_sweep_time = None
+            high_sweep_price = None
+
+            bearish_signal = None
+            bearish_signal_time = None
+            bearish_close = None
+
+            bearish_hourly_strat = None
+            bearish_pattern = None
+
+            bearish_same_candle = False
+
+            # =================================================
+            # WALK THROUGH 1H CANDLES IN ORDER
+            # =================================================
+
+            for i in range(
+                1,
+                len(hourly_current_week)
+            ):
+
+                previous = (
+                    hourly_current_week
+                    .iloc[i - 1]
+                )
+
+                current = (
+                    hourly_current_week
+                    .iloc[i]
+                )
+
+                timestamp = (
+                    hourly_current_week
+                    .index[i]
+                )
+
+                current_open = float(
+                    current["Open"]
+                )
+
+                current_high = float(
+                    current["High"]
+                )
+
+                current_low = float(
+                    current["Low"]
+                )
+
+                current_close = float(
+                    current["Close"]
+                )
+
+                previous_high = float(
+                    previous["High"]
+                )
+
+                previous_low = float(
+                    previous["Low"]
+                )
+
+                # =================================================
+                # CURRENT 1H PATTERN
+                # =================================================
+
+                actionable = (
+                    classify_actionable_candle(
+                        current_open,
+                        current_high,
+                        current_low,
+                        current_close,
+                        previous_high,
+                        previous_low,
+                    )
+                )
+
+                hourly_strat = (
+                    classify_strat_candle(
+                        current_open,
+                        current_high,
+                        current_low,
+                        current_close,
+                        previous_high,
+                        previous_low,
+                    )
+                )
+
+                # =================================================
+                # DETECT FIRST BULLISH SWEEP
+                # =================================================
+
+                low_sweep_this_candle = False
+
+                if (
+                    not low_swept
+                    and current_low
+                    < required_low
+                ):
+
+                    low_swept = True
+
+                    low_sweep_this_candle = (
+                        True
+                    )
+
+                    low_sweep_time = (
+                        timestamp
+                    )
+
+                    low_sweep_price = (
+                        current_low
+                    )
+
+                # =================================================
+                # DETECT FIRST BEARISH SWEEP
+                # =================================================
+
+                high_sweep_this_candle = False
+
+                if (
+                    not high_swept
+                    and current_high
+                    > required_high
+                ):
+
+                    high_swept = True
+
+                    high_sweep_this_candle = (
+                        True
+                    )
+
+                    high_sweep_time = (
+                        timestamp
+                    )
+
+                    high_sweep_price = (
+                        current_high
+                    )
+
+                # =================================================
+                # BULLISH ACTIONABLE
+                # =================================================
+                #
+                # Allowed:
+                #
+                # Hammer
+                # Inside Bar
+                # 2U Green
+                # 2D Green
+                #
+                # =================================================
+
+                bullish_actionable = False
+                bullish_signal_name = None
+
+                if actionable in [
+                    "Hammer",
+                    "Inside Bar",
+                ]:
+
+                    bullish_actionable = (
+                        True
+                    )
+
+                    bullish_signal_name = (
+                        actionable
+                    )
+
+                elif hourly_strat in [
+                    "2U Green",
+                    "2D Green",
+                ]:
+
+                    bullish_actionable = (
+                        True
+                    )
+
+                    bullish_signal_name = (
+                        hourly_strat
+                    )
+
+                # =================================================
+                # BEARISH ACTIONABLE
+                # =================================================
+
+                bearish_actionable = False
+                bearish_signal_name = None
+
+                if actionable in [
+                    "Shooting Star",
+                    "Inside Bar",
+                ]:
+
+                    bearish_actionable = (
+                        True
+                    )
+
+                    bearish_signal_name = (
+                        actionable
+                    )
+
+                elif hourly_strat in [
+                    "2D Red",
+                    "2U Red",
+                ]:
+
+                    bearish_actionable = (
+                        True
+                    )
+
+                    bearish_signal_name = (
+                        hourly_strat
+                    )
+
+                # =================================================
+                # EXACT BULLISH SEQUENCE
+                # =================================================
+                #
+                # 1. Price trades below required_low.
+                # 2. Both prior weekly lows are now swept.
+                # 3. Same or later 1H candle closes > required_low.
+                # 4. That closing candle must be actionable.
+                #
+                # Example:
+                #
+                # required_low = 181
+                # Low = 179
+                # Close = 182
+                # Hammer
+                #
+                # VALID.
+                # =================================================
+
+                if (
+                    low_swept
+                    and bullish_signal
+                    is None
+                ):
+
+                    one_hour_reclaim = (
+                        current_close
+                        > required_low
+                    )
+
+                    if (
+                        one_hour_reclaim
+                        and bullish_actionable
+                    ):
+
+                        bullish_signal = (
+                            bullish_signal_name
+                        )
+
+                        bullish_signal_time = (
+                            timestamp
+                        )
+
+                        bullish_close = (
+                            current_close
+                        )
+
+                        bullish_hourly_strat = (
+                            hourly_strat
+                        )
+
+                        bullish_pattern = (
+                            actionable
+                        )
+
+                        bullish_same_candle = (
+                            low_sweep_this_candle
+                        )
+
+                # =================================================
+                # EXACT BEARISH SEQUENCE
+                # =================================================
+                #
+                # 1. Price trades above required_high.
+                # 2. Both prior weekly highs are swept.
+                # 3. Same or later 1H candle closes < required_high.
+                # 4. That closing candle must be actionable.
+                # =================================================
+
+                if (
+                    high_swept
+                    and bearish_signal
+                    is None
+                ):
+
+                    one_hour_rejection = (
+                        current_close
+                        < required_high
+                    )
+
+                    if (
+                        one_hour_rejection
+                        and bearish_actionable
+                    ):
+
+                        bearish_signal = (
+                            bearish_signal_name
+                        )
+
+                        bearish_signal_time = (
+                            timestamp
+                        )
+
+                        bearish_close = (
+                            current_close
+                        )
+
+                        bearish_hourly_strat = (
+                            hourly_strat
+                        )
+
+                        bearish_pattern = (
+                            actionable
+                        )
+
+                        bearish_same_candle = (
+                            high_sweep_this_candle
+                        )
+
+            # =================================================
+            # ONLY RETURN CONFIRMED SETUPS
+            # =================================================
+
+            bullish_setup = (
+                low_swept
+                and bullish_signal
+                is not None
+            )
+
+            bearish_setup = (
+                high_swept
+                and bearish_signal
+                is not None
+            )
+
+            if not (
+                bullish_setup
+                or bearish_setup
+            ):
+                continue
+
+            # =================================================
+            # ADDITIONAL METRICS
+            # =================================================
+
+            current_price = float(
+                daily_df["Close"]
+                .iloc[-1]
+            )
+
+            daily_strat = (
+                get_daily_strat(
+                    daily_df
+                )
+            )
+
+            current_week_strat = (
+                get_current_week_strat(
+                    daily_df
+                )
+            )
+
+            ftfc = calculate_ftfc(
+                daily_df
+            )
+
+            rvol = calculate_rvol(
+                daily_df
+            )
+
+            atr_data = calculate_atr(
+                daily_df
+            )
+
+            # =================================================
+            # BULLISH RESULT
+            # =================================================
+
+            if bullish_setup:
+
+                sequence_type = (
+                    "Same 1H Candle"
+                    if bullish_same_candle
+                    else
+                    "Later 1H Candle"
+                )
+
+                pct_below_level = (
+                    (
+                        low_sweep_price
+                        - required_low
+                    )
+                    / required_low
+                ) * 100
+
+                reclaim_pct = (
+                    (
+                        bullish_close
+                        - required_low
+                    )
+                    / required_low
+                ) * 100
+
+                rows.append(
+                    {
+                        "Ticker":
+                            ticker,
+
+                        "Direction":
+                            "Bullish",
+
+                        "Asset":
+                            get_asset_type(
+                                ticker
+                            ),
+
+                        "Price":
+                            round(
+                                current_price,
+                                2,
+                            ),
+
+                        "Week -1 Low":
+                            round(
+                                week_1_low,
+                                2,
+                            ),
+
+                        "Week -2 Low":
+                            round(
+                                week_2_low,
+                                2,
+                            ),
+
+                        "2-Week Low":
+                            round(
+                                required_low,
+                                2,
+                            ),
+
+                        "Sweep Price":
+                            round(
+                                low_sweep_price,
+                                2,
+                            ),
+
+                        "Sweep %":
+                            round(
+                                pct_below_level,
+                                2,
+                            ),
+
+                        "Sweep Time":
+                            (
+                                low_sweep_time
+                                .strftime(
+                                    "%Y-%m-%d %H:%M"
+                                )
+                            ),
+
+                        "1H Close":
+                            round(
+                                bullish_close,
+                                2,
+                            ),
+
+                        "Close vs Level %":
+                            round(
+                                reclaim_pct,
+                                2,
+                            ),
+
+                        "Reclaim Level":
+                            round(
+                                required_low,
+                                2,
+                            ),
+
+                        "1H Reclaimed":
+                            True,
+
+                        "Sequence":
+                            sequence_type,
+
+                        "1H Actionable Signal":
+                            bullish_signal,
+
+                        "1H Candle Pattern":
+                            (
+                                bullish_pattern
+                                if bullish_pattern
+                                is not None
+                                else bullish_signal
+                            ),
+
+                        "1H STRAT":
+                            bullish_hourly_strat,
+
+                        "Signal Time":
+                            (
+                                bullish_signal_time
+                                .strftime(
+                                    "%Y-%m-%d %H:%M"
+                                )
+                            ),
+
+                        "Daily STRAT":
+                            daily_strat,
+
+                        "Current Week STRAT":
+                            current_week_strat,
+
+                        "Weekly FTFC":
+                            ftfc[
+                                "weekly"
+                            ],
+
+                        "Monthly FTFC":
+                            ftfc[
+                                "monthly"
+                            ],
+
+                        "FTFC":
+                            ftfc[
+                                "alignment"
+                            ],
+
+                        "RVOL":
+                            (
+                                round(
+                                    rvol,
+                                    2,
+                                )
+                                if rvol
+                                is not None
+                                else None
+                            ),
+
+                        "ATR":
+                            atr_data[
+                                "atr"
+                            ],
+
+                        "ATR %":
+                            atr_data[
+                                "atr_pct"
+                            ],
+
+                        "Signal":
+                            (
+                                f"Price < "
+                                f"{required_low:.2f} "
+                                f"→ Both Weekly Lows Swept "
+                                f"→ 1H Close > "
+                                f"{required_low:.2f} "
+                                f"→ {bullish_signal}"
+                            ),
+                    }
+                )
+
+            # =================================================
+            # BEARISH RESULT
+            # =================================================
+
+            if bearish_setup:
+
+                sequence_type = (
+                    "Same 1H Candle"
+                    if bearish_same_candle
+                    else
+                    "Later 1H Candle"
+                )
+
+                pct_above_level = (
+                    (
+                        high_sweep_price
+                        - required_high
+                    )
+                    / required_high
+                ) * 100
+
+                rejection_pct = (
+                    (
+                        bearish_close
+                        - required_high
+                    )
+                    / required_high
+                ) * 100
+
+                rows.append(
+                    {
+                        "Ticker":
+                            ticker,
+
+                        "Direction":
+                            "Bearish",
+
+                        "Asset":
+                            get_asset_type(
+                                ticker
+                            ),
+
+                        "Price":
+                            round(
+                                current_price,
+                                2,
+                            ),
+
+                        "Week -1 High":
+                            round(
+                                week_1_high,
+                                2,
+                            ),
+
+                        "Week -2 High":
+                            round(
+                                week_2_high,
+                                2,
+                            ),
+
+                        "2-Week High":
+                            round(
+                                required_high,
+                                2,
+                            ),
+
+                        "Sweep Price":
+                            round(
+                                high_sweep_price,
+                                2,
+                            ),
+
+                        "Sweep %":
+                            round(
+                                pct_above_level,
+                                2,
+                            ),
+
+                        "Sweep Time":
+                            (
+                                high_sweep_time
+                                .strftime(
+                                    "%Y-%m-%d %H:%M"
+                                )
+                            ),
+
+                        "1H Close":
+                            round(
+                                bearish_close,
+                                2,
+                            ),
+
+                        "Close vs Level %":
+                            round(
+                                rejection_pct,
+                                2,
+                            ),
+
+                        "Rejection Level":
+                            round(
+                                required_high,
+                                2,
+                            ),
+
+                        "1H Rejected":
+                            True,
+
+                        "Sequence":
+                            sequence_type,
+
+                        "1H Actionable Signal":
+                            bearish_signal,
+
+                        "1H Candle Pattern":
+                            (
+                                bearish_pattern
+                                if bearish_pattern
+                                is not None
+                                else bearish_signal
+                            ),
+
+                        "1H STRAT":
+                            bearish_hourly_strat,
+
+                        "Signal Time":
+                            (
+                                bearish_signal_time
+                                .strftime(
+                                    "%Y-%m-%d %H:%M"
+                                )
+                            ),
+
+                        "Daily STRAT":
+                            daily_strat,
+
+                        "Current Week STRAT":
+                            current_week_strat,
+
+                        "Weekly FTFC":
+                            ftfc[
+                                "weekly"
+                            ],
+
+                        "Monthly FTFC":
+                            ftfc[
+                                "monthly"
+                            ],
+
+                        "FTFC":
+                            ftfc[
+                                "alignment"
+                            ],
+
+                        "RVOL":
+                            (
+                                round(
+                                    rvol,
+                                    2,
+                                )
+                                if rvol
+                                is not None
+                                else None
+                            ),
+
+                        "ATR":
+                            atr_data[
+                                "atr"
+                            ],
+
+                        "ATR %":
+                            atr_data[
+                                "atr_pct"
+                            ],
+
+                        "Signal":
+                            (
+                                f"Price > "
+                                f"{required_high:.2f} "
+                                f"→ Both Weekly Highs Swept "
+                                f"→ 1H Close < "
+                                f"{required_high:.2f} "
+                                f"→ {bearish_signal}"
+                            ),
+                    }
+                )
+
+        except Exception:
+            pass
+
+        finally:
+
+            if total:
+
+                progress.progress(
+                    (index + 1)
+                    / total
+                )
+
+    progress.empty()
+    status.empty()
+
+    return pd.DataFrame(
+        rows
+    )
+
+
+# ============================================================
 # MARKET CONTEXT
 # ============================================================
 
@@ -2923,9 +3945,11 @@ def build_market_context(
 
     rows = []
 
-    spy_df = clean_ticker_dataframe(
-        market_data,
-        "SPY",
+    spy_df = (
+        clean_ticker_dataframe(
+            market_data,
+            "SPY",
+        )
     )
 
     for ticker in (
@@ -2934,9 +3958,11 @@ def build_market_context(
 
         try:
 
-            df = clean_ticker_dataframe(
-                market_data,
-                ticker,
+            df = (
+                clean_ticker_dataframe(
+                    market_data,
+                    ticker,
+                )
             )
 
             if (
@@ -2956,12 +3982,16 @@ def build_market_context(
                 )
             )
 
-            weekly = get_weekly_levels(
-                df
+            weekly = (
+                get_weekly_levels(
+                    df
+                )
             )
 
-            monthly = get_monthly_levels(
-                df
+            monthly = (
+                get_monthly_levels(
+                    df
+                )
             )
 
             ftfc = calculate_ftfc(
@@ -2977,8 +4007,7 @@ def build_market_context(
             )
 
             atr_data = calculate_atr(
-                df,
-                period=14,
+                df
             )
 
             return_5d = (
@@ -3014,10 +4043,6 @@ def build_market_context(
                     )
                 )
 
-            # ----------------------------------------------
-            # WEEKLY
-            # ----------------------------------------------
-
             if weekly:
 
                 pwl = weekly[
@@ -3042,16 +4067,14 @@ def build_market_context(
 
                 pct_pwl = (
                     (
-                        price
-                        - pwl
+                        price - pwl
                     )
                     / pwl
                 ) * 100
 
                 pct_pwh = (
                     (
-                        price
-                        - pwh
+                        price - pwh
                     )
                     / pwh
                 ) * 100
@@ -3071,10 +4094,6 @@ def build_market_context(
 
                 pct_pwl = None
                 pct_pwh = None
-
-            # ----------------------------------------------
-            # MONTHLY
-            # ----------------------------------------------
 
             if monthly:
 
@@ -3100,16 +4119,14 @@ def build_market_context(
 
                 pct_pml = (
                     (
-                        price
-                        - pml
+                        price - pml
                     )
                     / pml
                 ) * 100
 
                 pct_pmh = (
                     (
-                        price
-                        - pmh
+                        price - pmh
                     )
                     / pmh
                 ) * 100
@@ -3129,10 +4146,6 @@ def build_market_context(
 
                 pct_pml = None
                 pct_pmh = None
-
-            # ----------------------------------------------
-            # CONTEXT SCORE
-            # ----------------------------------------------
 
             points = 0
 
@@ -3173,27 +4186,18 @@ def build_market_context(
                 )
 
             if points >= 4:
-
-                context = (
-                    "Strong Bullish"
-                )
+                context = "Strong Bullish"
 
             elif points >= 2:
-
                 context = "Bullish"
 
             elif points <= -4:
-
-                context = (
-                    "Strong Bearish"
-                )
+                context = "Strong Bearish"
 
             elif points <= -2:
-
                 context = "Bearish"
 
             else:
-
                 context = "Mixed"
 
             if ticker == "^VIX":
@@ -3421,7 +4425,7 @@ def build_market_context(
 
 
 # ============================================================
-# HELPER FOR SAFE DISPLAY COLUMNS
+# SAFE COLUMN HELPER
 # ============================================================
 
 def available_columns(
@@ -3621,39 +4625,6 @@ st.sidebar.metric(
 )
 
 
-with st.sidebar.expander(
-    "📈 ETFs Included"
-):
-
-    st.markdown(
-        """
-**Broad Market**
-
-- SPY — S&P 500
-- QQQ — Nasdaq-100
-- IWM — Russell 2000
-
-**Sectors**
-
-- XLC — Communication Services
-- XLY — Consumer Discretionary
-- XLP — Consumer Staples
-- XLE — Energy
-- XLF — Financials
-- XLV — Health Care
-- XLI — Industrials
-- XLB — Materials
-- XLRE — Real Estate
-- XLK — Technology
-- XLU — Utilities
-
-**Market Context Only**
-
-- ^VIX — VIX
-"""
-    )
-
-
 # ============================================================
 # SESSION STATE
 # ============================================================
@@ -3665,6 +4636,16 @@ if (
 
     st.session_state[
         "market_data"
+    ] = None
+
+
+if (
+    "hourly_market_data"
+    not in st.session_state
+):
+
+    st.session_state[
+        "hourly_market_data"
     ] = None
 
 
@@ -3698,8 +4679,18 @@ if (
     ] = None
 
 
+if (
+    "two_week_results_raw"
+    not in st.session_state
+):
+
+    st.session_state[
+        "two_week_results_raw"
+    ] = None
+
+
 # ============================================================
-# LOAD MARKET DATA
+# LOAD DATA
 # ============================================================
 
 load_market = (
@@ -3724,9 +4715,7 @@ if load_market:
     )
 
     with st.spinner(
-        f"Downloading 1 year of data "
-        f"for {len(download_tickers)} "
-        f"symbols..."
+        "Downloading daily market data..."
     ):
 
         market_data = (
@@ -3735,9 +4724,23 @@ if load_market:
             )
         )
 
+    with st.spinner(
+        "Downloading 1-hour market data..."
+    ):
+
+        hourly_market_data = (
+            download_hourly_market_data(
+                selected_tickers
+            )
+        )
+
     st.session_state[
         "market_data"
     ] = market_data
+
+    st.session_state[
+        "hourly_market_data"
+    ] = hourly_market_data
 
     st.session_state[
         "loaded_universe"
@@ -3753,19 +4756,23 @@ if load_market:
         "monthly_results_raw"
     ] = None
 
+    st.session_state[
+        "two_week_results_raw"
+    ] = None
+
     if market_data:
 
         st.sidebar.success(
-            f"Loaded data for "
-            f"{len(market_data)} "
-            f"symbols."
+            f"Daily: "
+            f"{len(market_data)} symbols | "
+            f"1H: "
+            f"{len(hourly_market_data)} symbols"
         )
 
     else:
 
         st.sidebar.error(
-            "No market data was "
-            "downloaded."
+            "No market data downloaded."
         )
 
 
@@ -3786,6 +4793,16 @@ market_ready = (
 )
 
 
+hourly_ready = (
+    market_ready
+    and
+    st.session_state[
+        "hourly_market_data"
+    ]
+    is not None
+)
+
+
 if not market_ready:
 
     st.info(
@@ -3801,11 +4818,13 @@ if not market_ready:
 (
     weekly_tab,
     monthly_tab,
+    two_week_tab,
     market_context_tab,
 ) = st.tabs(
     [
         "📅 Weekly Scanner",
         "🗓️ Monthly Scanner",
+        "🎯 2-Week + 1H Reclaim",
         "🌎 Market Context",
     ]
 )
@@ -3827,14 +4846,9 @@ with weekly_tab:
         "Daily STRAT → Weekly FTFC"
     )
 
-    # --------------------------------------------------------
-    # FILTER ROW 1
-    # --------------------------------------------------------
-
     w1, w2, w3, w4 = (
         st.columns(4)
     )
-
 
     weekly_signal_filter = (
         w1.selectbox(
@@ -3854,7 +4868,6 @@ with weekly_tab:
         )
     )
 
-
     weekly_strat_filter = (
         w2.selectbox(
             "Current Week STRAT",
@@ -3866,18 +4879,15 @@ with weekly_tab:
         )
     )
 
-
     daily_filter = (
         w3.selectbox(
             "Daily STRAT",
             STRAT_OPTIONS,
             key=(
-                "weekly_daily_strat_"
-                "filter"
+                "weekly_daily_strat_filter"
             ),
         )
     )
-
 
     weekly_actionable_filter = (
         w4.selectbox(
@@ -3889,21 +4899,14 @@ with weekly_tab:
                 "Inside Bar",
             ],
             key=(
-                "weekly_actionable_"
-                "candle_filter"
+                "weekly_actionable_filter"
             ),
         )
     )
 
-
-    # --------------------------------------------------------
-    # FILTER ROW 2
-    # --------------------------------------------------------
-
     w5, w6, w7 = (
         st.columns(3)
     )
-
 
     weekly_category = (
         w5.selectbox(
@@ -3914,12 +4917,10 @@ with weekly_tab:
                 "Post-Confirmation",
             ],
             key=(
-                "weekly_actionable_"
-                "category_filter"
+                "weekly_category_filter"
             ),
         )
     )
-
 
     weekly_min_rvol = (
         w6.number_input(
@@ -3929,11 +4930,10 @@ with weekly_tab:
             value=0.0,
             step=0.1,
             key=(
-                "weekly_minimum_rvol"
+                "weekly_min_rvol"
             ),
         )
     )
-
 
     weekly_min_atr = (
         w7.number_input(
@@ -3943,11 +4943,10 @@ with weekly_tab:
             value=0.0,
             step=0.1,
             key=(
-                "weekly_minimum_atr_pct"
+                "weekly_min_atr"
             ),
         )
     )
-
 
     run_weekly = (
         st.button(
@@ -3955,11 +4954,10 @@ with weekly_tab:
             type="primary",
             use_container_width=True,
             key=(
-                "run_weekly_scanner_button"
+                "run_weekly_scanner"
             ),
         )
     )
-
 
     if run_weekly:
 
@@ -3979,11 +4977,6 @@ with weekly_tab:
                     "market_data"
                 ],
             )
-
-
-    # ========================================================
-    # WEEKLY RESULTS
-    # ========================================================
 
     if (
         st.session_state[
@@ -4007,10 +5000,6 @@ with weekly_tab:
             )
 
         else:
-
-            # ----------------------------------------------
-            # SIGNAL FILTER
-            # ----------------------------------------------
 
             if (
                 weekly_signal_filter
@@ -4090,10 +5079,6 @@ with weekly_tab:
                     ]
                 )
 
-            # ----------------------------------------------
-            # STRAT FILTERS
-            # ----------------------------------------------
-
             if (
                 weekly_strat_filter
                 != "All"
@@ -4119,10 +5104,6 @@ with weekly_tab:
                     ]
                 )
 
-            # ----------------------------------------------
-            # ACTIONABLE FILTER
-            # ----------------------------------------------
-
             if (
                 weekly_actionable_filter
                 != "All"
@@ -4136,9 +5117,7 @@ with weekly_tab:
                     weekly_results = (
                         weekly_results[
                             weekly_results[
-                                "First "
-                                "Pre-Confirmation "
-                                "Signal"
+                                "First Pre-Confirmation Signal"
                             ]
                             == weekly_actionable_filter
                         ]
@@ -4152,9 +5131,7 @@ with weekly_tab:
                     weekly_results = (
                         weekly_results[
                             weekly_results[
-                                "First "
-                                "Post-Confirmation "
-                                "Signal"
+                                "First Post-Confirmation Signal"
                             ]
                             == weekly_actionable_filter
                         ]
@@ -4166,18 +5143,14 @@ with weekly_tab:
                         weekly_results[
                             (
                                 weekly_results[
-                                    "First "
-                                    "Pre-Confirmation "
-                                    "Signal"
+                                    "First Pre-Confirmation Signal"
                                 ]
                                 == weekly_actionable_filter
                             )
                             |
                             (
                                 weekly_results[
-                                    "First "
-                                    "Post-Confirmation "
-                                    "Signal"
+                                    "First Post-Confirmation Signal"
                                 ]
                                 == weekly_actionable_filter
                             )
@@ -4192,9 +5165,7 @@ with weekly_tab:
                 weekly_results = (
                     weekly_results[
                         weekly_results[
-                            "First "
-                            "Pre-Confirmation "
-                            "Signal"
+                            "First Pre-Confirmation Signal"
                         ]
                         .notna()
                     ]
@@ -4208,17 +5179,11 @@ with weekly_tab:
                 weekly_results = (
                     weekly_results[
                         weekly_results[
-                            "First "
-                            "Post-Confirmation "
-                            "Signal"
+                            "First Post-Confirmation Signal"
                         ]
                         .notna()
                     ]
                 )
-
-            # ----------------------------------------------
-            # RVOL
-            # ----------------------------------------------
 
             if weekly_min_rvol > 0:
 
@@ -4232,10 +5197,6 @@ with weekly_tab:
                     ]
                 )
 
-            # ----------------------------------------------
-            # ATR %
-            # ----------------------------------------------
-
             if weekly_min_atr > 0:
 
                 weekly_results = (
@@ -4247,10 +5208,6 @@ with weekly_tab:
                         >= weekly_min_atr
                     ]
                 )
-
-            # ----------------------------------------------
-            # DISPLAY
-            # ----------------------------------------------
 
             if weekly_results.empty:
 
@@ -4327,225 +5284,11 @@ with weekly_tab:
                     ),
                 )
 
-                st.subheader(
-                    "🔎 Weekly Scanner Results"
-                )
-
                 st.dataframe(
                     weekly_results,
                     use_container_width=True,
                     hide_index=True,
                 )
-
-                # ------------------------------------------
-                # POST CONFIRMATION
-                # ------------------------------------------
-
-                weekly_post = (
-                    weekly_results[
-                        weekly_results[
-                            "First "
-                            "Post-Confirmation "
-                            "Signal"
-                        ]
-                        .notna()
-                    ]
-                )
-
-                if not weekly_post.empty:
-
-                    st.subheader(
-                        "✅ Weekly "
-                        "Post-Confirmation Signals"
-                    )
-
-                    columns = [
-                        "Ticker",
-                        "Asset",
-                        "Price",
-                        "Post-Confirmation Event",
-                        "First Post-Confirmation Signal",
-                        "Post-Confirmation Date",
-                        "Prev Week STRAT",
-                        "Current Week STRAT",
-                        "Daily STRAT",
-                        "Weekly FTFC",
-                        "Monthly FTFC",
-                        "FTFC",
-                        "RVOL",
-                        "ATR",
-                        "ATR %",
-                        "Signal",
-                    ]
-
-                    st.dataframe(
-                        weekly_post[
-                            available_columns(
-                                weekly_post,
-                                columns,
-                            )
-                        ],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-
-                # ------------------------------------------
-                # PRE CONFIRMATION
-                # ------------------------------------------
-
-                weekly_pre = (
-                    weekly_results[
-                        weekly_results[
-                            "First "
-                            "Pre-Confirmation "
-                            "Signal"
-                        ]
-                        .notna()
-                    ]
-                )
-
-                if not weekly_pre.empty:
-
-                    st.subheader(
-                        "⚠️ Weekly "
-                        "Pre-Confirmation Signals"
-                    )
-
-                    columns = [
-                        "Ticker",
-                        "Asset",
-                        "Price",
-                        "Pre-Confirmation Event",
-                        "First Pre-Confirmation Signal",
-                        "Pre-Confirmation Date",
-                        "Prev Week STRAT",
-                        "Current Week STRAT",
-                        "Daily STRAT",
-                        "Weekly FTFC",
-                        "Monthly FTFC",
-                        "FTFC",
-                        "RVOL",
-                        "ATR",
-                        "ATR %",
-                        "Signal",
-                    ]
-
-                    st.dataframe(
-                        weekly_pre[
-                            available_columns(
-                                weekly_pre,
-                                columns,
-                            )
-                        ],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-
-                # ------------------------------------------
-                # BULLISH
-                # ------------------------------------------
-
-                weekly_bullish = (
-                    weekly_results[
-                        weekly_results[
-                            "Bullish Setup"
-                        ]
-                    ]
-                )
-
-                if not weekly_bullish.empty:
-
-                    st.subheader(
-                        "🟢 Bullish Weekly Setups"
-                    )
-
-                    columns = [
-                        "Ticker",
-                        "Asset",
-                        "Price",
-                        "Prev Week Low",
-                        "Low Sweep Date",
-                        "Low Reclaim Date",
-                        "Prev Week STRAT",
-                        "Current Week STRAT",
-                        "Daily STRAT",
-                        "First Post-Confirmation Signal",
-                        "Post-Confirmation Date",
-                        "Weekly FTFC",
-                        "Monthly FTFC",
-                        "FTFC",
-                        "RVOL",
-                        "ATR",
-                        "ATR %",
-                        "% From PWL",
-                        "Signal",
-                    ]
-
-                    st.dataframe(
-                        weekly_bullish[
-                            available_columns(
-                                weekly_bullish,
-                                columns,
-                            )
-                        ],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-
-                # ------------------------------------------
-                # BEARISH
-                # ------------------------------------------
-
-                weekly_bearish = (
-                    weekly_results[
-                        weekly_results[
-                            "Bearish Setup"
-                        ]
-                    ]
-                )
-
-                if not weekly_bearish.empty:
-
-                    st.subheader(
-                        "🔴 Bearish Weekly Setups"
-                    )
-
-                    columns = [
-                        "Ticker",
-                        "Asset",
-                        "Price",
-                        "Prev Week High",
-                        "High Sweep Date",
-                        "High Rejection Date",
-                        "Prev Week STRAT",
-                        "Current Week STRAT",
-                        "Daily STRAT",
-                        "First Post-Confirmation Signal",
-                        "Post-Confirmation Date",
-                        "Weekly FTFC",
-                        "Monthly FTFC",
-                        "FTFC",
-                        "RVOL",
-                        "ATR",
-                        "ATR %",
-                        "% From PWH",
-                        "Signal",
-                    ]
-
-                    st.dataframe(
-                        weekly_bearish[
-                            available_columns(
-                                weekly_bearish,
-                                columns,
-                            )
-                        ],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-
-                # ------------------------------------------
-                # DOWNLOAD
-                # ------------------------------------------
 
                 weekly_csv = (
                     weekly_results
@@ -4585,14 +5328,9 @@ with monthly_tab:
         "Weekly STRAT → Monthly FTFC"
     )
 
-    # --------------------------------------------------------
-    # FILTER ROW 1
-    # --------------------------------------------------------
-
     m1, m2, m3, m4 = (
         st.columns(4)
     )
-
 
     monthly_signal_filter = (
         m1.selectbox(
@@ -4612,30 +5350,25 @@ with monthly_tab:
         )
     )
 
-
     month_strat_filter = (
         m2.selectbox(
             "Current Month STRAT",
             STRAT_OPTIONS,
             key=(
-                "monthly_current_month_"
-                "strat_filter"
+                "monthly_month_strat_filter"
             ),
         )
     )
-
 
     month_weekly_filter = (
         m3.selectbox(
             "Current Week STRAT",
             STRAT_OPTIONS,
             key=(
-                "monthly_current_week_"
-                "strat_filter"
+                "monthly_week_strat_filter"
             ),
         )
     )
-
 
     monthly_actionable_filter = (
         m4.selectbox(
@@ -4647,21 +5380,14 @@ with monthly_tab:
                 "Inside Bar",
             ],
             key=(
-                "monthly_weekly_"
-                "actionable_filter"
+                "monthly_actionable_filter"
             ),
         )
     )
 
-
-    # --------------------------------------------------------
-    # FILTER ROW 2
-    # --------------------------------------------------------
-
     m5, m6, m7 = (
         st.columns(3)
     )
-
 
     monthly_category = (
         m5.selectbox(
@@ -4672,12 +5398,10 @@ with monthly_tab:
                 "Post-Confirmation",
             ],
             key=(
-                "monthly_actionable_"
-                "category_filter"
+                "monthly_category_filter"
             ),
         )
     )
-
 
     monthly_min_rvol = (
         m6.number_input(
@@ -4687,11 +5411,10 @@ with monthly_tab:
             value=0.0,
             step=0.1,
             key=(
-                "monthly_minimum_rvol"
+                "monthly_min_rvol"
             ),
         )
     )
-
 
     monthly_min_atr = (
         m7.number_input(
@@ -4701,11 +5424,10 @@ with monthly_tab:
             value=0.0,
             step=0.1,
             key=(
-                "monthly_minimum_atr_pct"
+                "monthly_min_atr"
             ),
         )
     )
-
 
     run_monthly = (
         st.button(
@@ -4713,11 +5435,10 @@ with monthly_tab:
             type="primary",
             use_container_width=True,
             key=(
-                "run_monthly_scanner_button"
+                "run_monthly_scanner"
             ),
         )
     )
-
 
     if run_monthly:
 
@@ -4737,11 +5458,6 @@ with monthly_tab:
                     "market_data"
                 ],
             )
-
-
-    # ========================================================
-    # MONTHLY RESULTS
-    # ========================================================
 
     if (
         st.session_state[
@@ -4765,10 +5481,6 @@ with monthly_tab:
             )
 
         else:
-
-            # ----------------------------------------------
-            # SIGNAL
-            # ----------------------------------------------
 
             if (
                 monthly_signal_filter
@@ -4848,10 +5560,6 @@ with monthly_tab:
                     ]
                 )
 
-            # ----------------------------------------------
-            # STRAT
-            # ----------------------------------------------
-
             if (
                 month_strat_filter
                 != "All"
@@ -4880,10 +5588,6 @@ with monthly_tab:
                     ]
                 )
 
-            # ----------------------------------------------
-            # ACTIONABLE
-            # ----------------------------------------------
-
             if (
                 monthly_actionable_filter
                 != "All"
@@ -4897,9 +5601,7 @@ with monthly_tab:
                     monthly_results = (
                         monthly_results[
                             monthly_results[
-                                "First "
-                                "Pre-Confirmation "
-                                "Weekly Signal"
+                                "First Pre-Confirmation Weekly Signal"
                             ]
                             == monthly_actionable_filter
                         ]
@@ -4913,9 +5615,7 @@ with monthly_tab:
                     monthly_results = (
                         monthly_results[
                             monthly_results[
-                                "First "
-                                "Post-Confirmation "
-                                "Weekly Signal"
+                                "First Post-Confirmation Weekly Signal"
                             ]
                             == monthly_actionable_filter
                         ]
@@ -4927,18 +5627,14 @@ with monthly_tab:
                         monthly_results[
                             (
                                 monthly_results[
-                                    "First "
-                                    "Pre-Confirmation "
-                                    "Weekly Signal"
+                                    "First Pre-Confirmation Weekly Signal"
                                 ]
                                 == monthly_actionable_filter
                             )
                             |
                             (
                                 monthly_results[
-                                    "First "
-                                    "Post-Confirmation "
-                                    "Weekly Signal"
+                                    "First Post-Confirmation Weekly Signal"
                                 ]
                                 == monthly_actionable_filter
                             )
@@ -4953,9 +5649,7 @@ with monthly_tab:
                 monthly_results = (
                     monthly_results[
                         monthly_results[
-                            "First "
-                            "Pre-Confirmation "
-                            "Weekly Signal"
+                            "First Pre-Confirmation Weekly Signal"
                         ]
                         .notna()
                     ]
@@ -4969,17 +5663,11 @@ with monthly_tab:
                 monthly_results = (
                     monthly_results[
                         monthly_results[
-                            "First "
-                            "Post-Confirmation "
-                            "Weekly Signal"
+                            "First Post-Confirmation Weekly Signal"
                         ]
                         .notna()
                     ]
                 )
-
-            # ----------------------------------------------
-            # RVOL
-            # ----------------------------------------------
 
             if monthly_min_rvol > 0:
 
@@ -4993,10 +5681,6 @@ with monthly_tab:
                     ]
                 )
 
-            # ----------------------------------------------
-            # ATR %
-            # ----------------------------------------------
-
             if monthly_min_atr > 0:
 
                 monthly_results = (
@@ -5008,10 +5692,6 @@ with monthly_tab:
                         >= monthly_min_atr
                     ]
                 )
-
-            # ----------------------------------------------
-            # DISPLAY
-            # ----------------------------------------------
 
             if monthly_results.empty:
 
@@ -5088,221 +5768,11 @@ with monthly_tab:
                     ),
                 )
 
-                st.subheader(
-                    "🔎 Monthly Scanner Results"
-                )
-
                 st.dataframe(
                     monthly_results,
                     use_container_width=True,
                     hide_index=True,
                 )
-
-                # ------------------------------------------
-                # POST
-                # ------------------------------------------
-
-                monthly_post = (
-                    monthly_results[
-                        monthly_results[
-                            "First "
-                            "Post-Confirmation "
-                            "Weekly Signal"
-                        ]
-                        .notna()
-                    ]
-                )
-
-                if not monthly_post.empty:
-
-                    st.subheader(
-                        "✅ Monthly "
-                        "Post-Confirmation Signals"
-                    )
-
-                    columns = [
-                        "Ticker",
-                        "Asset",
-                        "Price",
-                        "Post-Confirmation Event",
-                        "First Post-Confirmation Weekly Signal",
-                        "Post-Confirmation Week",
-                        "Prev Month STRAT",
-                        "Current Month STRAT",
-                        "Current Week STRAT",
-                        "Weekly FTFC",
-                        "Monthly FTFC",
-                        "FTFC",
-                        "RVOL",
-                        "ATR",
-                        "ATR %",
-                        "Signal",
-                    ]
-
-                    st.dataframe(
-                        monthly_post[
-                            available_columns(
-                                monthly_post,
-                                columns,
-                            )
-                        ],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-
-                # ------------------------------------------
-                # PRE
-                # ------------------------------------------
-
-                monthly_pre = (
-                    monthly_results[
-                        monthly_results[
-                            "First "
-                            "Pre-Confirmation "
-                            "Weekly Signal"
-                        ]
-                        .notna()
-                    ]
-                )
-
-                if not monthly_pre.empty:
-
-                    st.subheader(
-                        "⚠️ Monthly "
-                        "Pre-Confirmation Signals"
-                    )
-
-                    columns = [
-                        "Ticker",
-                        "Asset",
-                        "Price",
-                        "Pre-Confirmation Event",
-                        "First Pre-Confirmation Weekly Signal",
-                        "Pre-Confirmation Week",
-                        "Prev Month STRAT",
-                        "Current Month STRAT",
-                        "Current Week STRAT",
-                        "Weekly FTFC",
-                        "Monthly FTFC",
-                        "FTFC",
-                        "RVOL",
-                        "ATR",
-                        "ATR %",
-                        "Signal",
-                    ]
-
-                    st.dataframe(
-                        monthly_pre[
-                            available_columns(
-                                monthly_pre,
-                                columns,
-                            )
-                        ],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-
-                # ------------------------------------------
-                # BULLISH
-                # ------------------------------------------
-
-                monthly_bullish = (
-                    monthly_results[
-                        monthly_results[
-                            "Bullish Setup"
-                        ]
-                    ]
-                )
-
-                if not monthly_bullish.empty:
-
-                    st.subheader(
-                        "🟢 Bullish Monthly Setups"
-                    )
-
-                    columns = [
-                        "Ticker",
-                        "Asset",
-                        "Price",
-                        "Prev Month Low",
-                        "PML Sweep Date",
-                        "PML Reclaim Date",
-                        "Prev Month STRAT",
-                        "Current Month STRAT",
-                        "Current Week STRAT",
-                        "First Post-Confirmation Weekly Signal",
-                        "Post-Confirmation Week",
-                        "Weekly FTFC",
-                        "Monthly FTFC",
-                        "FTFC",
-                        "RVOL",
-                        "ATR",
-                        "ATR %",
-                        "% From PML",
-                        "Signal",
-                    ]
-
-                    st.dataframe(
-                        monthly_bullish[
-                            available_columns(
-                                monthly_bullish,
-                                columns,
-                            )
-                        ],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-
-                # ------------------------------------------
-                # BEARISH
-                # ------------------------------------------
-
-                monthly_bearish = (
-                    monthly_results[
-                        monthly_results[
-                            "Bearish Setup"
-                        ]
-                    ]
-                )
-
-                if not monthly_bearish.empty:
-
-                    st.subheader(
-                        "🔴 Bearish Monthly Setups"
-                    )
-
-                    columns = [
-                        "Ticker",
-                        "Asset",
-                        "Price",
-                        "Prev Month High",
-                        "PMH Sweep Date",
-                        "PMH Rejection Date",
-                        "Prev Month STRAT",
-                        "Current Month STRAT",
-                        "Current Week STRAT",
-                        "First Post-Confirmation Weekly Signal",
-                        "Post-Confirmation Week",
-                        "Weekly FTFC",
-                        "Monthly FTFC",
-                        "FTFC",
-                        "RVOL",
-                        "ATR",
-                        "ATR %",
-                        "% From PMH",
-                        "Signal",
-                    ]
-
-                    st.dataframe(
-                        monthly_bearish[
-                            available_columns(
-                                monthly_bearish,
-                                columns,
-                            )
-                        ],
-                        use_container_width=True,
-                        hide_index=True,
-                    )
 
                 monthly_csv = (
                     monthly_results
@@ -5322,6 +5792,520 @@ with monthly_tab:
                     use_container_width=True,
                     key=(
                         "download_monthly_results"
+                    ),
+                )
+
+
+# ============================================================
+# NEW 2-WEEK + 1H TAB
+# ============================================================
+
+with two_week_tab:
+
+    st.header(
+        "🎯 2-Week Liquidity Sweep + 1H Reclaim"
+    )
+
+    st.caption(
+        "Bullish: Price < lower of previous 2 weekly lows "
+        "→ 1H Close > that low → actionable 1H signal | "
+        "Bearish: Price > higher of previous 2 weekly highs "
+        "→ 1H Close < that high → actionable 1H signal"
+    )
+
+    st.info(
+        "Example: weekly lows = $185 and $181. "
+        "Valid bullish sequence: "
+        "Price < $181 → both lows swept → "
+        "1H close > $181 → actionable signal."
+    )
+
+    tw1, tw2, tw3, tw4 = (
+        st.columns(4)
+    )
+
+    two_week_direction = (
+        tw1.selectbox(
+            "Direction",
+            [
+                "All",
+                "Bullish",
+                "Bearish",
+            ],
+            key=(
+                "two_week_direction"
+            ),
+        )
+    )
+
+    two_week_signal = (
+        tw2.selectbox(
+            "1H Actionable Signal",
+            [
+                "All",
+                "Hammer",
+                "Shooting Star",
+                "Inside Bar",
+                "2U Green",
+                "2D Green",
+                "2U Red",
+                "2D Red",
+            ],
+            key=(
+                "two_week_signal"
+            ),
+        )
+    )
+
+    two_week_min_rvol = (
+        tw3.number_input(
+            "Minimum RVOL",
+            min_value=0.0,
+            max_value=20.0,
+            value=0.0,
+            step=0.1,
+            key=(
+                "two_week_min_rvol"
+            ),
+        )
+    )
+
+    two_week_min_atr = (
+        tw4.number_input(
+            "Minimum ATR %",
+            min_value=0.0,
+            max_value=20.0,
+            value=0.0,
+            step=0.1,
+            key=(
+                "two_week_min_atr"
+            ),
+        )
+    )
+
+    tw5, tw6 = (
+        st.columns(2)
+    )
+
+    sequence_filter = (
+        tw5.selectbox(
+            "Sweep / Reclaim Timing",
+            [
+                "All",
+                "Same 1H Candle",
+                "Later 1H Candle",
+            ],
+            key=(
+                "two_week_sequence_filter"
+            ),
+        )
+    )
+
+    ftfc_filter = (
+        tw6.selectbox(
+            "M/W FTFC",
+            [
+                "All",
+                "FTFC Up",
+                "FTFC Down",
+                "Mixed",
+            ],
+            key=(
+                "two_week_ftfc_filter"
+            ),
+        )
+    )
+
+    run_two_week = (
+        st.button(
+            "🚀 Run 2-Week + 1H Scanner",
+            type="primary",
+            use_container_width=True,
+            key=(
+                "run_two_week_scanner"
+            ),
+        )
+    )
+
+    if run_two_week:
+
+        if not market_ready:
+
+            st.warning(
+                "Load market data first."
+            )
+
+        elif not hourly_ready:
+
+            st.warning(
+                "1-hour data is not loaded."
+            )
+
+        else:
+
+            st.session_state[
+                "two_week_results_raw"
+            ] = scan_two_week_levels(
+                selected_tickers,
+                st.session_state[
+                    "market_data"
+                ],
+                st.session_state[
+                    "hourly_market_data"
+                ],
+            )
+
+    if (
+        st.session_state[
+            "two_week_results_raw"
+        ]
+        is not None
+    ):
+
+        two_week_results = (
+            st.session_state[
+                "two_week_results_raw"
+            ]
+            .copy()
+        )
+
+        if two_week_results.empty:
+
+            st.warning(
+                "No confirmed 2-week sweep + "
+                "1H reclaim/rejection setups found."
+            )
+
+        else:
+
+            if (
+                two_week_direction
+                != "All"
+            ):
+
+                two_week_results = (
+                    two_week_results[
+                        two_week_results[
+                            "Direction"
+                        ]
+                        == two_week_direction
+                    ]
+                )
+
+            if (
+                two_week_signal
+                != "All"
+            ):
+
+                two_week_results = (
+                    two_week_results[
+                        two_week_results[
+                            "1H Actionable Signal"
+                        ]
+                        == two_week_signal
+                    ]
+                )
+
+            if (
+                sequence_filter
+                != "All"
+            ):
+
+                two_week_results = (
+                    two_week_results[
+                        two_week_results[
+                            "Sequence"
+                        ]
+                        == sequence_filter
+                    ]
+                )
+
+            if (
+                ftfc_filter
+                != "All"
+            ):
+
+                two_week_results = (
+                    two_week_results[
+                        two_week_results[
+                            "FTFC"
+                        ]
+                        == ftfc_filter
+                    ]
+                )
+
+            if two_week_min_rvol > 0:
+
+                two_week_results = (
+                    two_week_results[
+                        two_week_results[
+                            "RVOL"
+                        ]
+                        .fillna(0)
+                        >= two_week_min_rvol
+                    ]
+                )
+
+            if two_week_min_atr > 0:
+
+                two_week_results = (
+                    two_week_results[
+                        two_week_results[
+                            "ATR %"
+                        ]
+                        .fillna(0)
+                        >= two_week_min_atr
+                    ]
+                )
+
+            if two_week_results.empty:
+
+                st.warning(
+                    "No 2-week setups matched "
+                    "the current filters."
+                )
+
+            else:
+
+                two_week_results = (
+                    two_week_results
+                    .sort_values(
+                        [
+                            "ATR %",
+                            "RVOL",
+                        ],
+                        ascending=[
+                            False,
+                            False,
+                        ],
+                        na_position="last",
+                    )
+                )
+
+                t1, t2, t3, t4 = (
+                    st.columns(4)
+                )
+
+                t1.metric(
+                    "Confirmed Setups",
+                    len(
+                        two_week_results
+                    ),
+                )
+
+                t2.metric(
+                    "Bullish",
+                    int(
+                        (
+                            two_week_results[
+                                "Direction"
+                            ]
+                            == "Bullish"
+                        )
+                        .sum()
+                    ),
+                )
+
+                t3.metric(
+                    "Bearish",
+                    int(
+                        (
+                            two_week_results[
+                                "Direction"
+                            ]
+                            == "Bearish"
+                        )
+                        .sum()
+                    ),
+                )
+
+                t4.metric(
+                    "Same 1H Candle",
+                    int(
+                        (
+                            two_week_results[
+                                "Sequence"
+                            ]
+                            == "Same 1H Candle"
+                        )
+                        .sum()
+                    ),
+                )
+
+                # =================================================
+                # ALL CONFIRMED SETUPS
+                # =================================================
+
+                st.subheader(
+                    "🔎 Confirmed 2-Week + 1H Setups"
+                )
+
+                display_columns = [
+                    "Ticker",
+                    "Direction",
+                    "Price",
+                    "Week -1 Low",
+                    "Week -2 Low",
+                    "2-Week Low",
+                    "Week -1 High",
+                    "Week -2 High",
+                    "2-Week High",
+                    "Sweep Price",
+                    "Sweep Time",
+                    "1H Close",
+                    "Reclaim Level",
+                    "Rejection Level",
+                    "Sequence",
+                    "1H Actionable Signal",
+                    "1H STRAT",
+                    "Signal Time",
+                    "Daily STRAT",
+                    "Current Week STRAT",
+                    "Weekly FTFC",
+                    "Monthly FTFC",
+                    "FTFC",
+                    "RVOL",
+                    "ATR %",
+                    "Signal",
+                ]
+
+                st.dataframe(
+                    two_week_results[
+                        available_columns(
+                            two_week_results,
+                            display_columns,
+                        )
+                    ],
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+                # =================================================
+                # BULLISH
+                # =================================================
+
+                bullish_results = (
+                    two_week_results[
+                        two_week_results[
+                            "Direction"
+                        ]
+                        == "Bullish"
+                    ]
+                )
+
+                if not bullish_results.empty:
+
+                    st.subheader(
+                        "🟢 Two Weekly Lows Swept + 1H Reclaim"
+                    )
+
+                    bullish_columns = [
+                        "Ticker",
+                        "Price",
+                        "Week -1 Low",
+                        "Week -2 Low",
+                        "2-Week Low",
+                        "Sweep Price",
+                        "Sweep %",
+                        "Sweep Time",
+                        "1H Close",
+                        "Close vs Level %",
+                        "Reclaim Level",
+                        "Sequence",
+                        "1H Actionable Signal",
+                        "1H STRAT",
+                        "Signal Time",
+                        "Current Week STRAT",
+                        "Weekly FTFC",
+                        "Monthly FTFC",
+                        "RVOL",
+                        "ATR %",
+                        "Signal",
+                    ]
+
+                    st.dataframe(
+                        bullish_results[
+                            available_columns(
+                                bullish_results,
+                                bullish_columns,
+                            )
+                        ],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                # =================================================
+                # BEARISH
+                # =================================================
+
+                bearish_results = (
+                    two_week_results[
+                        two_week_results[
+                            "Direction"
+                        ]
+                        == "Bearish"
+                    ]
+                )
+
+                if not bearish_results.empty:
+
+                    st.subheader(
+                        "🔴 Two Weekly Highs Swept + 1H Rejection"
+                    )
+
+                    bearish_columns = [
+                        "Ticker",
+                        "Price",
+                        "Week -1 High",
+                        "Week -2 High",
+                        "2-Week High",
+                        "Sweep Price",
+                        "Sweep %",
+                        "Sweep Time",
+                        "1H Close",
+                        "Close vs Level %",
+                        "Rejection Level",
+                        "Sequence",
+                        "1H Actionable Signal",
+                        "1H STRAT",
+                        "Signal Time",
+                        "Current Week STRAT",
+                        "Weekly FTFC",
+                        "Monthly FTFC",
+                        "RVOL",
+                        "ATR %",
+                        "Signal",
+                    ]
+
+                    st.dataframe(
+                        bearish_results[
+                            available_columns(
+                                bearish_results,
+                                bearish_columns,
+                            )
+                        ],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+                two_week_csv = (
+                    two_week_results
+                    .to_csv(
+                        index=False
+                    )
+                    .encode("utf-8")
+                )
+
+                st.download_button(
+                    "⬇️ Download 2-Week + 1H Results",
+                    data=two_week_csv,
+                    file_name=(
+                        "two_week_1h_scanner.csv"
+                    ),
+                    mime="text/csv",
+                    use_container_width=True,
+                    key=(
+                        "download_two_week_results"
                     ),
                 )
 
@@ -5366,9 +6350,9 @@ with market_context_tab:
 
         else:
 
-            # ================================================
+            # =================================================
             # INDEX SNAPSHOT
-            # ================================================
+            # =================================================
 
             st.subheader(
                 "🧭 Index Snapshot"
@@ -5407,7 +6391,9 @@ with market_context_tab:
                     ]
                 )
 
-                if pd.notna(return5):
+                if pd.notna(
+                    return5
+                ):
 
                     delta = (
                         f"{return5:.2f}% 5D"
@@ -5451,9 +6437,9 @@ with market_context_tab:
                     f'M {row["Monthly FTFC"]}'
                 )
 
-            # ================================================
+            # =================================================
             # MAJOR MARKET
-            # ================================================
+            # =================================================
 
             st.subheader(
                 "📊 Major Market Context"
@@ -5473,7 +6459,7 @@ with market_context_tab:
                 )
             ].copy()
 
-            columns = [
+            major_columns = [
                 "Ticker",
                 "Market",
                 "Price",
@@ -5498,16 +6484,16 @@ with market_context_tab:
                 major[
                     available_columns(
                         major,
-                        columns,
+                        major_columns,
                     )
                 ],
                 use_container_width=True,
                 hide_index=True,
             )
 
-            # ================================================
+            # =================================================
             # SECTOR CONTEXT
-            # ================================================
+            # =================================================
 
             st.subheader(
                 "🏭 Sector ETF Context"
@@ -5536,7 +6522,7 @@ with market_context_tab:
                     )
                 )
 
-            columns = [
+            sector_columns = [
                 "Ticker",
                 "Market",
                 "Price",
@@ -5560,22 +6546,22 @@ with market_context_tab:
                 sectors[
                     available_columns(
                         sectors,
-                        columns,
+                        sector_columns,
                     )
                 ],
                 use_container_width=True,
                 hide_index=True,
             )
 
-            # ================================================
-            # SECTOR RS
-            # ================================================
+            # =================================================
+            # RELATIVE STRENGTH
+            # =================================================
 
             st.subheader(
                 "🚀 Sector Relative Strength vs SPY"
             )
 
-            columns = [
+            rs_columns = [
                 "Ticker",
                 "Market",
                 "5D Return %",
@@ -5591,7 +6577,7 @@ with market_context_tab:
             sector_rs = sectors[
                 available_columns(
                     sectors,
-                    columns,
+                    rs_columns,
                 )
             ].copy()
 
@@ -5615,9 +6601,9 @@ with market_context_tab:
                 hide_index=True,
             )
 
-            # ================================================
+            # =================================================
             # BREADTH
-            # ================================================
+            # =================================================
 
             st.subheader(
                 "📈 Market Trend Breadth"
@@ -5674,15 +6660,15 @@ with market_context_tab:
                 f"{above200}/{total_assets}",
             )
 
-            # ================================================
+            # =================================================
             # WEEK LEVELS
-            # ================================================
+            # =================================================
 
             st.subheader(
                 "📅 Previous Week Levels"
             )
 
-            columns = [
+            weekly_context_columns = [
                 "Ticker",
                 "Market",
                 "Price",
@@ -5702,22 +6688,22 @@ with market_context_tab:
                 context_df[
                     available_columns(
                         context_df,
-                        columns,
+                        weekly_context_columns,
                     )
                 ],
                 use_container_width=True,
                 hide_index=True,
             )
 
-            # ================================================
+            # =================================================
             # MONTH LEVELS
-            # ================================================
+            # =================================================
 
             st.subheader(
                 "🗓️ Previous Month Levels"
             )
 
-            columns = [
+            monthly_context_columns = [
                 "Ticker",
                 "Market",
                 "Price",
@@ -5737,16 +6723,12 @@ with market_context_tab:
                 context_df[
                     available_columns(
                         context_df,
-                        columns,
+                        monthly_context_columns,
                     )
                 ],
                 use_container_width=True,
                 hide_index=True,
             )
-
-            # ================================================
-            # CSV
-            # ================================================
 
             context_csv = (
                 context_df
