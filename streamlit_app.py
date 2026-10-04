@@ -389,6 +389,83 @@ def download_market_data(tickers):
 
 
 # ============================================================
+# 1H MARKET DATA DOWNLOAD
+# ============================================================
+
+@st.cache_data(ttl=900, show_spinner=False)
+def download_hourly_market_data(tickers):
+
+    tickers = sorted(set(tickers))
+    results = {}
+
+    if not tickers:
+        return results
+
+    batch_size = 30
+
+    for start in range(0, len(tickers), batch_size):
+        batch = tickers[start:start + batch_size]
+
+        try:
+            data = yf.download(
+                tickers=batch,
+                period="60d",
+                interval="1h",
+                group_by="ticker",
+                auto_adjust=False,
+                threads=True,
+                progress=False,
+                prepost=False,
+                timeout=30,
+            )
+
+            if data is None or data.empty:
+                continue
+
+            if len(batch) > 1:
+                if not isinstance(data.columns, pd.MultiIndex):
+                    continue
+
+                level0 = set(data.columns.get_level_values(0))
+                level1 = set(data.columns.get_level_values(1))
+
+                for ticker in batch:
+                    try:
+                        if ticker in level0:
+                            ticker_df = data[ticker].copy()
+                        elif ticker in level1:
+                            ticker_df = data.xs(ticker, axis=1, level=1).copy()
+                        else:
+                            continue
+
+                        if not ticker_df.empty:
+                            results[ticker] = ticker_df
+                    except Exception:
+                        continue
+            else:
+                ticker = batch[0]
+                ticker_df = data.copy()
+
+                if isinstance(ticker_df.columns, pd.MultiIndex):
+                    level0 = set(ticker_df.columns.get_level_values(0))
+                    level1 = set(ticker_df.columns.get_level_values(1))
+                    if ticker in level0:
+                        ticker_df = ticker_df[ticker].copy()
+                    elif ticker in level1:
+                        ticker_df = ticker_df.xs(ticker, axis=1, level=1).copy()
+
+                if not ticker_df.empty:
+                    results[ticker] = ticker_df
+
+        except Exception:
+            continue
+
+        time.sleep(0.10)
+
+    return results
+
+
+# ============================================================
 # CLEAN DATA
 # ============================================================
 
@@ -514,6 +591,53 @@ def clean_ticker_dataframe(
         )
 
         return df
+
+    except Exception:
+        return None
+
+
+def clean_hourly_dataframe(hourly_data, ticker):
+    try:
+        if ticker not in hourly_data:
+            return None
+
+        df = hourly_data[ticker].copy()
+
+        if isinstance(df.columns, pd.MultiIndex):
+            flattened = []
+            valid = {"Open", "High", "Low", "Close", "Adj Close", "Volume"}
+            for column in df.columns:
+                if isinstance(column, tuple):
+                    candidates = [str(v) for v in column if str(v) in valid]
+                    flattened.append(candidates[0] if candidates else str(column[-1]))
+                else:
+                    flattened.append(str(column))
+            df.columns = flattened
+
+        required = ["Open", "High", "Low", "Close", "Volume"]
+        if not all(column in df.columns for column in required):
+            return None
+
+        df = df[required].copy()
+        for column in required:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+
+        df = df.dropna(subset=["Open", "High", "Low", "Close"])
+        if df.empty:
+            return None
+
+        index = pd.to_datetime(df.index)
+        if getattr(index, "tz", None) is not None:
+            index = index.tz_convert("America/New_York").tz_localize(None)
+        df.index = index
+        df = df[~df.index.duplicated(keep="last")].sort_index()
+
+        # Yahoo 1H timestamps represent the start of the hourly bar.
+        # Keep only bars whose full hour has completed.
+        now_et = pd.Timestamp.now(tz="America/New_York").tz_localize(None)
+        df = df[(df.index + pd.Timedelta(hours=1)) <= now_et].copy()
+
+        return df if not df.empty else None
 
     except Exception:
         return None
@@ -2914,6 +3038,233 @@ def scan_monthly(
 
 
 # ============================================================
+# 2-WEEK LIQUIDITY SWEEP + 1H RECLAIM SCANNER
+# ============================================================
+
+def scan_two_week_hourly(tickers, market_data):
+    rows = []
+    candidates = {}
+
+    # First use daily data to pre-filter symbols that have already swept
+    # BOTH of the two most recent completed weekly lows or highs.
+    for ticker in sorted(set(tickers)):
+        try:
+            df = clean_ticker_dataframe(market_data, ticker)
+            if df is None or len(df) < 30:
+                continue
+
+            weekly = build_weekly_dataframe(df)
+            current_period = df.index[-1].to_period("W-FRI")
+            completed = weekly[weekly.index < current_period]
+            if len(completed) < 2 or current_period not in weekly.index:
+                continue
+
+            week_1 = completed.iloc[-1]
+            week_2 = completed.iloc[-2]
+            current = weekly.loc[current_period]
+
+            required_low = min(float(week_1["Low"]), float(week_2["Low"]))
+            required_high = max(float(week_1["High"]), float(week_2["High"]))
+
+            low_candidate = float(current["Low"]) < required_low
+            high_candidate = float(current["High"]) > required_high
+
+            if low_candidate or high_candidate:
+                candidates[ticker] = {
+                    "df": df,
+                    "week_1": week_1,
+                    "week_2": week_2,
+                    "required_low": required_low,
+                    "required_high": required_high,
+                    "low_candidate": low_candidate,
+                    "high_candidate": high_candidate,
+                }
+        except Exception:
+            continue
+
+    if not candidates:
+        return pd.DataFrame()
+
+    with st.spinner(f"Downloading closed 1H data for {len(candidates)} sweep candidates..."):
+        hourly_data = download_hourly_market_data(list(candidates.keys()))
+
+    total = len(candidates)
+    progress = st.progress(0)
+    status = st.empty()
+
+    for index, (ticker, info) in enumerate(candidates.items()):
+        status.text(f"2-Week + 1H scan: {ticker} ({index + 1}/{total})")
+
+        try:
+            df = info["df"]
+            hdf = clean_hourly_dataframe(hourly_data, ticker)
+            if hdf is None or len(hdf) < 2:
+                continue
+
+            current_period = df.index[-1].to_period("W-FRI")
+            current_hourly = hdf[hdf.index.to_period("W-FRI") == current_period].copy()
+            if len(current_hourly) < 2:
+                continue
+
+            required_low = info["required_low"]
+            required_high = info["required_high"]
+            month_levels = get_monthly_levels(df)
+            previous_month_strat = (
+                month_levels["previous_strat"] if month_levels is not None else "N/A"
+            )
+            ftfc = calculate_ftfc(df)
+            rvol = calculate_rvol(df)
+            atr_data = calculate_atr(df, period=14)
+            daily_strat = get_daily_strat(df)
+            current_week_strat = get_current_week_strat(df)
+
+            low_swept = False
+            high_swept = False
+            low_sweep_time = None
+            high_sweep_time = None
+            low_sweep_price = None
+            high_sweep_price = None
+            bullish_found = False
+            bearish_found = False
+
+            for i in range(1, len(current_hourly)):
+                timestamp = current_hourly.index[i]
+                row = current_hourly.iloc[i]
+                previous_row = current_hourly.iloc[i - 1]
+
+                o = float(row["Open"])
+                h = float(row["High"])
+                l = float(row["Low"])
+                c = float(row["Close"])
+
+                # IMPORTANT: update sweep state BEFORE testing the signal.
+                # This allows the SAME closed 1H candle to sweep, reclaim/reject,
+                # and provide the actionable signal.
+                if info["low_candidate"] and not low_swept and l < required_low:
+                    low_swept = True
+                    low_sweep_time = timestamp
+                    low_sweep_price = l
+
+                if info["high_candidate"] and not high_swept and h > required_high:
+                    high_swept = True
+                    high_sweep_time = timestamp
+                    high_sweep_price = h
+
+                candle_signal = classify_actionable_candle(
+                    o, h, l, c,
+                    float(previous_row["High"]),
+                    float(previous_row["Low"]),
+                )
+
+                hourly_strat = classify_strat_candle(
+                    o, h, l, c,
+                    float(previous_row["High"]),
+                    float(previous_row["Low"]),
+                )
+
+                bullish_actionable = (
+                    candle_signal in {"Hammer", "Inside Bar"}
+                    or hourly_strat in {"2U Green", "2D Green"}
+                )
+                bearish_actionable = (
+                    candle_signal in {"Shooting Star", "Inside Bar"}
+                    or hourly_strat in {"2D Red", "2U Red"}
+                )
+
+                # Bullish exact sequence:
+                # price < LOWER of prior 2 weekly lows -> both swept ->
+                # closed 1H close > that LOWER low -> actionable signal.
+                if (
+                    not bullish_found
+                    and low_swept
+                    and c > required_low
+                    and bullish_actionable
+                ):
+                    signal_name = candle_signal or hourly_strat
+                    rows.append({
+                        "Ticker": ticker,
+                        "Asset": get_asset_type(ticker),
+                        "Direction": "Bullish",
+                        "Price": round(float(df["Close"].iloc[-1]), 2),
+                        "Week -1 Low": round(float(info["week_1"]["Low"]), 2),
+                        "Week -2 Low": round(float(info["week_2"]["Low"]), 2),
+                        "Required Sweep Low": round(required_low, 2),
+                        "Low Sweep Price": round(low_sweep_price, 2),
+                        "Low Sweep Time": low_sweep_time.strftime("%Y-%m-%d %H:%M"),
+                        "1H Close": round(c, 2),
+                        "Reclaim Level": round(required_low, 2),
+                        "1H Actionable Signal": signal_name,
+                        "1H Candle Pattern": candle_signal,
+                        "1H STRAT": hourly_strat,
+                        "Signal Time": timestamp.strftime("%Y-%m-%d %H:%M"),
+                        "Previous Month STRAT": previous_month_strat,
+                        "Daily STRAT": daily_strat,
+                        "Current Week STRAT": current_week_strat,
+                        "Weekly FTFC": ftfc["weekly"],
+                        "Monthly FTFC": ftfc["monthly"],
+                        "FTFC": ftfc["alignment"],
+                        "RVOL": round(rvol, 2) if rvol is not None else None,
+                        "ATR": atr_data["atr"],
+                        "ATR %": atr_data["atr_pct"],
+                        "Sequence": "Both weekly lows swept → 1H reclaim → actionable",
+                        "Signal": f"2-Week Low Sweep → 1H Close > {required_low:.2f} → {signal_name}",
+                    })
+                    bullish_found = True
+
+                # Bearish exact sequence:
+                # price > HIGHER of prior 2 weekly highs -> both swept ->
+                # closed 1H close < that HIGHER high -> actionable signal.
+                if (
+                    not bearish_found
+                    and high_swept
+                    and c < required_high
+                    and bearish_actionable
+                ):
+                    signal_name = candle_signal or hourly_strat
+                    rows.append({
+                        "Ticker": ticker,
+                        "Asset": get_asset_type(ticker),
+                        "Direction": "Bearish",
+                        "Price": round(float(df["Close"].iloc[-1]), 2),
+                        "Week -1 High": round(float(info["week_1"]["High"]), 2),
+                        "Week -2 High": round(float(info["week_2"]["High"]), 2),
+                        "Required Sweep High": round(required_high, 2),
+                        "High Sweep Price": round(high_sweep_price, 2),
+                        "High Sweep Time": high_sweep_time.strftime("%Y-%m-%d %H:%M"),
+                        "1H Close": round(c, 2),
+                        "Rejection Level": round(required_high, 2),
+                        "1H Actionable Signal": signal_name,
+                        "1H Candle Pattern": candle_signal,
+                        "1H STRAT": hourly_strat,
+                        "Signal Time": timestamp.strftime("%Y-%m-%d %H:%M"),
+                        "Previous Month STRAT": previous_month_strat,
+                        "Daily STRAT": daily_strat,
+                        "Current Week STRAT": current_week_strat,
+                        "Weekly FTFC": ftfc["weekly"],
+                        "Monthly FTFC": ftfc["monthly"],
+                        "FTFC": ftfc["alignment"],
+                        "RVOL": round(rvol, 2) if rvol is not None else None,
+                        "ATR": atr_data["atr"],
+                        "ATR %": atr_data["atr_pct"],
+                        "Sequence": "Both weekly highs swept → 1H rejection → actionable",
+                        "Signal": f"2-Week High Sweep → 1H Close < {required_high:.2f} → {signal_name}",
+                    })
+                    bearish_found = True
+
+                if bullish_found and bearish_found:
+                    break
+
+        except Exception:
+            pass
+        finally:
+            progress.progress((index + 1) / total)
+
+    progress.empty()
+    status.empty()
+    return pd.DataFrame(rows)
+
+
+# ============================================================
 # MARKET CONTEXT
 # ============================================================
 
@@ -3698,6 +4049,16 @@ if (
     ] = None
 
 
+if (
+    "two_week_results_raw"
+    not in st.session_state
+):
+
+    st.session_state[
+        "two_week_results_raw"
+    ] = None
+
+
 # ============================================================
 # LOAD MARKET DATA
 # ============================================================
@@ -3753,6 +4114,10 @@ if load_market:
         "monthly_results_raw"
     ] = None
 
+    st.session_state[
+        "two_week_results_raw"
+    ] = None
+
     if market_data:
 
         st.sidebar.success(
@@ -3801,11 +4166,13 @@ if not market_ready:
 (
     weekly_tab,
     monthly_tab,
+    two_week_tab,
     market_context_tab,
 ) = st.tabs(
     [
         "📅 Weekly Scanner",
         "🗓️ Monthly Scanner",
+        "🎯 2-Week + 1H Reclaim",
         "🌎 Market Context",
     ]
 )
@@ -5324,6 +5691,130 @@ with monthly_tab:
                         "download_monthly_results"
                     ),
                 )
+
+
+# ============================================================
+# 2-WEEK + 1H RECLAIM TAB
+# ============================================================
+
+with two_week_tab:
+
+    st.header("🎯 2-Week Liquidity Sweep + 1H Reclaim")
+    st.caption(
+        "Bullish: Price < lower of previous 2 weekly lows → both lows swept → "
+        "closed 1H close > lower low → actionable 1H signal.  "
+        "Bearish: Price > higher of previous 2 weekly highs → both highs swept → "
+        "closed 1H close < higher high → actionable 1H signal."
+    )
+
+    st.info(
+        "The actionable signal may occur on the same CLOSED 1H candle that performs "
+        "the sweep/reclaim or rejection, or on a later closed 1H candle."
+    )
+
+    f1, f2, f3, f4 = st.columns(4)
+    two_week_direction = f1.selectbox(
+        "Direction", ["All", "Bullish", "Bearish"], key="two_week_direction_filter"
+    )
+    two_week_actionable = f2.selectbox(
+        "1H Actionable Signal",
+        ["All", "Hammer", "Shooting Star", "Inside Bar", "2U Green", "2D Green", "2D Red", "2U Red"],
+        key="two_week_actionable_filter",
+    )
+    two_week_prev_month = f3.selectbox(
+        "Previous Month STRAT", STRAT_OPTIONS, key="two_week_previous_month_strat_filter"
+    )
+    two_week_ftfc = f4.selectbox(
+        "M/W FTFC", ["All", "FTFC Up", "FTFC Down", "Mixed"], key="two_week_ftfc_filter"
+    )
+
+    f5, f6 = st.columns(2)
+    two_week_min_rvol = f5.number_input(
+        "Minimum RVOL", min_value=0.0, value=0.0, step=0.1, key="two_week_min_rvol_filter"
+    )
+    two_week_min_atr = f6.number_input(
+        "Minimum ATR %", min_value=0.0, value=0.0, step=0.1, key="two_week_min_atr_filter"
+    )
+
+    run_two_week = st.button(
+        "🎯 Run 2-Week + 1H Scan",
+        type="primary",
+        use_container_width=True,
+        key="run_two_week_hourly_scan",
+    )
+
+    if not market_ready:
+        st.warning("Load market data first.")
+
+    elif run_two_week:
+        st.session_state["two_week_results_raw"] = scan_two_week_hourly(
+            selected_tickers, st.session_state["market_data"]
+        )
+
+    two_week_results = st.session_state["two_week_results_raw"]
+
+    if two_week_results is not None:
+        filtered = two_week_results.copy()
+
+        if not filtered.empty:
+            if two_week_direction != "All":
+                filtered = filtered[filtered["Direction"] == two_week_direction]
+            if two_week_actionable != "All":
+                filtered = filtered[filtered["1H Actionable Signal"] == two_week_actionable]
+            if two_week_prev_month != "All":
+                filtered = filtered[filtered["Previous Month STRAT"] == two_week_prev_month]
+            if two_week_ftfc != "All":
+                filtered = filtered[filtered["FTFC"] == two_week_ftfc]
+            if two_week_min_rvol > 0:
+                filtered = filtered[filtered["RVOL"].fillna(0) >= two_week_min_rvol]
+            if two_week_min_atr > 0:
+                filtered = filtered[filtered["ATR %"].fillna(0) >= two_week_min_atr]
+
+        if filtered.empty:
+            st.warning("No 2-Week + 1H setups match the current filters.")
+        else:
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Setups", len(filtered))
+            m2.metric("Bullish", int((filtered["Direction"] == "Bullish").sum()))
+            m3.metric("Bearish", int((filtered["Direction"] == "Bearish").sum()))
+
+            columns = [
+                "Ticker", "Asset", "Direction", "Price",
+                "Week -1 Low", "Week -2 Low", "Required Sweep Low",
+                "Week -1 High", "Week -2 High", "Required Sweep High",
+                "Low Sweep Price", "Low Sweep Time",
+                "High Sweep Price", "High Sweep Time",
+                "1H Close", "Reclaim Level", "Rejection Level",
+                "1H Actionable Signal", "1H Candle Pattern", "1H STRAT", "Signal Time",
+                "Previous Month STRAT", "Daily STRAT", "Current Week STRAT",
+                "Weekly FTFC", "Monthly FTFC", "FTFC", "RVOL", "ATR", "ATR %",
+                "Sequence", "Signal",
+            ]
+            st.dataframe(
+                filtered[available_columns(filtered, columns)],
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            bullish = filtered[filtered["Direction"] == "Bullish"]
+            if not bullish.empty:
+                st.subheader("🟢 Bullish 2-Week + 1H Setups")
+                st.dataframe(bullish[available_columns(bullish, columns)], use_container_width=True, hide_index=True)
+
+            bearish = filtered[filtered["Direction"] == "Bearish"]
+            if not bearish.empty:
+                st.subheader("🔴 Bearish 2-Week + 1H Setups")
+                st.dataframe(bearish[available_columns(bearish, columns)], use_container_width=True, hide_index=True)
+
+            csv = filtered.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "⬇️ Download 2-Week + 1H Results",
+                data=csv,
+                file_name="two_week_1h_reclaim_scanner.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="download_two_week_hourly_results",
+            )
 
 
 # ============================================================
