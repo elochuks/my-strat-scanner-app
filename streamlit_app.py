@@ -3264,6 +3264,156 @@ def scan_two_week_hourly(tickers, market_data):
     return pd.DataFrame(rows)
 
 
+
+# ============================================================
+# 2-MONTH LIQUIDITY SWEEP + 1D RECLAIM SCANNER
+# ============================================================
+
+def scan_two_month_daily(tickers, market_data):
+    """Sweep both completed monthly levels, then reclaim/reject on a closed daily bar."""
+    rows = []
+    now_et = pd.Timestamp.now(tz="America/New_York")
+    progress = st.progress(0)
+    status = st.empty()
+    symbols = sorted(set(tickers))
+
+    for index, ticker in enumerate(symbols):
+        status.text(f"2-Month + 1D scan: {ticker} ({index + 1}/{len(symbols)})")
+        try:
+            df = clean_ticker_dataframe(market_data, ticker)
+            if df is None or len(df) < 65:
+                continue
+
+            # yfinance daily candles may include today's developing bar.
+            # Exclude it until the regular US equity session has ended.
+            daily = df.copy()
+            if (now_et.hour, now_et.minute) < (16, 0):
+                daily = daily[daily.index.date < now_et.date()]
+            if len(daily) < 65:
+                continue
+
+            current_month = now_et.tz_localize(None).to_period("M")
+            monthly = build_monthly_dataframe(daily)
+            completed = monthly[monthly.index < current_month]
+            if len(completed) < 2:
+                continue
+
+            month_1, month_2 = completed.iloc[-1], completed.iloc[-2]
+            required_low = min(float(month_1["Low"]), float(month_2["Low"]))
+            required_high = max(float(month_1["High"]), float(month_2["High"]))
+
+            current_daily = daily[daily.index.to_period("M") == current_month]
+            if current_daily.empty:
+                continue
+
+            low_swept = False
+            high_swept = False
+            low_sweep_date = high_sweep_date = None
+            low_sweep_price = high_sweep_price = None
+            bullish_found = bearish_found = False
+
+            prev_month_strat = classify_strat_candle(
+                float(month_1["Open"]), float(month_1["High"]),
+                float(month_1["Low"]), float(month_1["Close"]),
+                float(month_2["High"]), float(month_2["Low"])
+            )
+            ftfc = calculate_ftfc(daily)
+            rvol = calculate_rvol(daily)
+            atr = calculate_atr(daily, period=14)
+
+            for timestamp, candle in current_daily.iterrows():
+                position = daily.index.get_loc(timestamp)
+                if position == 0:
+                    continue
+                previous = daily.iloc[position - 1]
+                o, h, l, c = (float(candle[k]) for k in ("Open", "High", "Low", "Close"))
+                candle_signal = classify_actionable_candle(
+                    o, h, l, c, float(previous["High"]), float(previous["Low"])
+                )
+                daily_strat = classify_strat_candle(
+                    o, h, l, c, float(previous["High"]), float(previous["Low"])
+                )
+
+                # Sweep state is updated BEFORE testing the reclaim and signal.
+                if not low_swept and l < required_low:
+                    low_swept = True
+                    low_sweep_date = timestamp
+                    low_sweep_price = l
+                if not high_swept and h > required_high:
+                    high_swept = True
+                    high_sweep_date = timestamp
+                    high_sweep_price = h
+
+                bullish_actionable = (
+                    candle_signal in {"Hammer", "Inside Bar"}
+                    or daily_strat in {"2U Green", "2D Green"}
+                )
+                bearish_actionable = (
+                    candle_signal in {"Shooting Star", "Inside Bar"}
+                    or daily_strat in {"2D Red", "2U Red"}
+                )
+
+                common = {
+                    "Ticker": ticker,
+                    "Asset": get_asset_type(ticker),
+                    "Price": round(float(daily["Close"].iloc[-1]), 2),
+                    "Month -1 Low": round(float(month_1["Low"]), 2),
+                    "Month -2 Low": round(float(month_2["Low"]), 2),
+                    "Month -1 High": round(float(month_1["High"]), 2),
+                    "Month -2 High": round(float(month_2["High"]), 2),
+                    "1D Close": round(c, 2),
+                    "1D Candle Pattern": candle_signal,
+                    "1D STRAT": daily_strat,
+                    "Signal Date": timestamp.strftime("%Y-%m-%d"),
+                    "Previous Month STRAT": prev_month_strat,
+                    "Current Week STRAT": get_current_week_strat(daily),
+                    "Weekly FTFC": ftfc["weekly"],
+                    "Monthly FTFC": ftfc["monthly"],
+                    "FTFC": ftfc["alignment"],
+                    "RVOL": round(rvol, 2) if rvol is not None else None,
+                    "ATR": atr["atr"],
+                    "ATR %": atr["atr_pct"],
+                }
+
+                if not bullish_found and low_swept and c > required_low and bullish_actionable:
+                    name = candle_signal if candle_signal in {"Hammer", "Inside Bar"} else daily_strat
+                    rows.append({
+                        **common, "Direction": "Bullish",
+                        "Required Sweep Low": round(required_low, 2),
+                        "Low Sweep Price": round(low_sweep_price, 2),
+                        "Low Sweep Date": low_sweep_date.strftime("%Y-%m-%d"),
+                        "Reclaim Level": round(required_low, 2),
+                        "1D Actionable Signal": name,
+                        "Sequence": "Both monthly lows swept → 1D reclaim → actionable",
+                        "Signal": f"2-Month Low Sweep → 1D Close > {required_low:.2f} → {name}",
+                    })
+                    bullish_found = True
+
+                if not bearish_found and high_swept and c < required_high and bearish_actionable:
+                    name = candle_signal if candle_signal in {"Shooting Star", "Inside Bar"} else daily_strat
+                    rows.append({
+                        **common, "Direction": "Bearish",
+                        "Required Sweep High": round(required_high, 2),
+                        "High Sweep Price": round(high_sweep_price, 2),
+                        "High Sweep Date": high_sweep_date.strftime("%Y-%m-%d"),
+                        "Rejection Level": round(required_high, 2),
+                        "1D Actionable Signal": name,
+                        "Sequence": "Both monthly highs swept → 1D rejection → actionable",
+                        "Signal": f"2-Month High Sweep → 1D Close < {required_high:.2f} → {name}",
+                    })
+                    bearish_found = True
+
+                if bullish_found and bearish_found:
+                    break
+        except Exception:
+            continue
+        finally:
+            progress.progress((index + 1) / len(symbols))
+    progress.empty()
+    status.empty()
+    return pd.DataFrame(rows)
+
+
 # ============================================================
 # MARKET CONTEXT
 # ============================================================
@@ -4059,6 +4209,10 @@ if (
     ] = None
 
 
+if "two_month_results_raw" not in st.session_state:
+    st.session_state["two_month_results_raw"] = None
+
+
 # ============================================================
 # LOAD MARKET DATA
 # ============================================================
@@ -4167,12 +4321,14 @@ if not market_ready:
     weekly_tab,
     monthly_tab,
     two_week_tab,
+    two_month_tab,
     market_context_tab,
 ) = st.tabs(
     [
         "📅 Weekly Scanner",
         "🗓️ Monthly Scanner",
         "🎯 2-Week + 1H Reclaim",
+        "🎯 2-Month + 1D Reclaim",
         "🌎 Market Context",
     ]
 )
@@ -5814,6 +5970,93 @@ with two_week_tab:
                 mime="text/csv",
                 use_container_width=True,
                 key="download_two_week_hourly_results",
+            )
+
+
+
+# ============================================================
+# 2-MONTH + 1D RECLAIM TAB
+# ============================================================
+
+with two_month_tab:
+    st.header("🎯 2-Month Liquidity Sweep + 1D Reclaim")
+    st.caption(
+        "Bullish: price < lower of previous 2 completed monthly lows → both swept → "
+        "closed 1D close > lower low → actionable daily signal. "
+        "Bearish: price > higher of previous 2 completed monthly highs → both swept → "
+        "closed 1D close < higher high → actionable daily signal."
+    )
+    st.info("The same completed daily candle may sweep, reclaim/reject, and trigger the signal; a later completed daily candle can also qualify.")
+
+    a, b, c, d = st.columns(4)
+    month_direction = a.selectbox("Direction", ["All", "Bullish", "Bearish"], key="two_month_direction")
+    month_actionable = b.selectbox(
+        "1D Actionable Signal",
+        ["All", "Hammer", "Shooting Star", "Inside Bar", "2U Green", "2D Green", "2D Red", "2U Red"],
+        key="two_month_actionable"
+    )
+    month_prev_strat = c.selectbox("Previous Month STRAT", STRAT_OPTIONS, key="two_month_prev_strat")
+    month_ftfc = d.selectbox("M/W FTFC", ["All", "FTFC Up", "FTFC Down", "Mixed"], key="two_month_ftfc")
+    e, f = st.columns(2)
+    month_rvol = e.number_input("Minimum RVOL", min_value=0.0, value=0.0, step=0.1, key="two_month_rvol")
+    month_atr = f.number_input("Minimum ATR %", min_value=0.0, value=0.0, step=0.1, key="two_month_atr")
+
+    if st.button("🎯 Run 2-Month + 1D Scan", type="primary", use_container_width=True, key="run_two_month_daily"):
+        if market_ready:
+            st.session_state["two_month_results_raw"] = scan_two_month_daily(
+                selected_tickers, st.session_state["market_data"]
+            )
+        else:
+            st.warning("Load market data first.")
+
+    results = st.session_state["two_month_results_raw"]
+    if results is not None:
+        filtered = results.copy()
+        if not filtered.empty:
+            if month_direction != "All":
+                filtered = filtered[filtered["Direction"] == month_direction]
+            if month_actionable != "All":
+                filtered = filtered[filtered["1D Actionable Signal"] == month_actionable]
+            if month_prev_strat != "All":
+                filtered = filtered[filtered["Previous Month STRAT"] == month_prev_strat]
+            if month_ftfc != "All":
+                filtered = filtered[filtered["FTFC"] == month_ftfc]
+            if month_rvol > 0:
+                filtered = filtered[filtered["RVOL"].fillna(0) >= month_rvol]
+            if month_atr > 0:
+                filtered = filtered[filtered["ATR %"].fillna(0) >= month_atr]
+
+        if filtered.empty:
+            st.warning("No 2-Month + 1D setups match the current filters.")
+        else:
+            x, y, z = st.columns(3)
+            x.metric("Setups", len(filtered))
+            y.metric("Bullish", int((filtered["Direction"] == "Bullish").sum()))
+            z.metric("Bearish", int((filtered["Direction"] == "Bearish").sum()))
+            display_cols = [
+                "Ticker", "Asset", "Direction", "Price",
+                "Month -1 Low", "Month -2 Low", "Required Sweep Low",
+                "Month -1 High", "Month -2 High", "Required Sweep High",
+                "Low Sweep Price", "Low Sweep Date", "High Sweep Price", "High Sweep Date",
+                "1D Close", "Reclaim Level", "Rejection Level",
+                "1D Actionable Signal", "1D Candle Pattern", "1D STRAT", "Signal Date",
+                "Previous Month STRAT", "Current Week STRAT",
+                "Weekly FTFC", "Monthly FTFC", "FTFC", "RVOL", "ATR", "ATR %",
+                "Sequence", "Signal",
+            ]
+            st.dataframe(filtered[available_columns(filtered, display_cols)], use_container_width=True, hide_index=True)
+            for direction, label in [("Bullish", "🟢 Bullish 2-Month + 1D Setups"), ("Bearish", "🔴 Bearish 2-Month + 1D Setups")]:
+                subset = filtered[filtered["Direction"] == direction]
+                if not subset.empty:
+                    st.subheader(label)
+                    st.dataframe(subset[available_columns(subset, display_cols)], use_container_width=True, hide_index=True)
+            st.download_button(
+                "⬇️ Download 2-Month + 1D Results",
+                data=filtered.to_csv(index=False).encode("utf-8"),
+                file_name="two_month_1d_reclaim_scanner.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="download_two_month_daily",
             )
 
 
