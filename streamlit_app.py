@@ -3334,22 +3334,6 @@ def scan_two_month_daily(tickers, market_data):
                     o, h, l, c, float(previous["High"]), float(previous["Low"])
                 )
 
-                # Quarter FTFC is evaluated at the signal candle's close.
-                # Quarter opens on the first available trading day of that quarter.
-                quarter = timestamp.to_period("Q")
-                quarter_bars = daily[
-                    (daily.index.to_period("Q") == quarter)
-                    & (daily.index <= timestamp)
-                ]
-                if quarter_bars.empty:
-                    continue
-                quarter_open = float(quarter_bars["Open"].iloc[0])
-                quarter_ftfc = (
-                    "Up" if c > quarter_open
-                    else "Down" if c < quarter_open
-                    else "Neutral"
-                )
-
                 # Sweep state is updated BEFORE testing the reclaim and signal.
                 if not low_swept and l < required_low:
                     low_swept = True
@@ -3382,7 +3366,6 @@ def scan_two_month_daily(tickers, market_data):
                     "1D STRAT": daily_strat,
                     "Signal Date": timestamp.strftime("%Y-%m-%d"),
                     "Previous Month STRAT": prev_month_strat,
-                    "Quarter FTFC": quarter_ftfc,
                     "Current Week STRAT": get_current_week_strat(daily),
                     "Weekly FTFC": ftfc["weekly"],
                     "Monthly FTFC": ftfc["monthly"],
@@ -3392,7 +3375,7 @@ def scan_two_month_daily(tickers, market_data):
                     "ATR %": atr["atr_pct"],
                 }
 
-                if not bullish_found and low_swept and c > required_low and bullish_actionable and quarter_ftfc == "Up":
+                if not bullish_found and low_swept and c > required_low and bullish_actionable:
                     name = candle_signal if candle_signal in {"Hammer", "Inside Bar"} else daily_strat
                     rows.append({
                         **common, "Direction": "Bullish",
@@ -3406,7 +3389,7 @@ def scan_two_month_daily(tickers, market_data):
                     })
                     bullish_found = True
 
-                if not bearish_found and high_swept and c < required_high and bearish_actionable and quarter_ftfc == "Down":
+                if not bearish_found and high_swept and c < required_high and bearish_actionable:
                     name = candle_signal if candle_signal in {"Shooting Star", "Inside Bar"} else daily_strat
                     rows.append({
                         **common, "Direction": "Bearish",
@@ -6003,7 +5986,7 @@ with two_month_tab:
         "Bearish: price > higher of previous 2 completed monthly highs → both swept → "
         "closed 1D close < higher high → actionable daily signal."
     )
-    st.info("Quarter FTFC is mandatory: bullish signals require Quarter FTFC Up; bearish signals require Quarter FTFC Down. The same completed daily candle may sweep, reclaim/reject, and trigger the signal; a later completed daily candle can also qualify.")
+    st.info("The same completed daily candle may sweep, reclaim/reject, and trigger the signal; a later completed daily candle can also qualify.")
 
     a, b, c, d = st.columns(4)
     month_direction = a.selectbox("Direction", ["All", "Bullish", "Bearish"], key="two_month_direction")
@@ -6057,7 +6040,7 @@ with two_month_tab:
                 "Low Sweep Price", "Low Sweep Date", "High Sweep Price", "High Sweep Date",
                 "1D Close", "Reclaim Level", "Rejection Level",
                 "1D Actionable Signal", "1D Candle Pattern", "1D STRAT", "Signal Date",
-                "Previous Month STRAT", "Current Week STRAT", "Quarter FTFC",
+                "Previous Month STRAT", "Current Week STRAT",
                 "Weekly FTFC", "Monthly FTFC", "FTFC", "RVOL", "ATR", "ATR %",
                 "Sequence", "Signal",
             ]
